@@ -185,7 +185,9 @@ SETUP_JS = r"""
   const crop = LiteGraph.createNode('DeggCropImage');
   crop.pos = [620, 120];
   g.add(crop);
-  crop.setSize([460, 460]);
+  // Высота ноды заведомо больше суммы виджетов: иначе строки сетки не
+  // помещаются, и превью не может вырасти вместе с нодой.
+  crop.setSize([600, 900]);
   window.__probeLoad = load;
   window.__probeCrop = crop;
   // Задать кадр так, как это делает воркфлоу: пишем crop_rect (+ output_size)
@@ -309,8 +311,14 @@ async def main() -> int:
 
             before = await cdp.eval(STATE_JS)
             check("DOM-виджет смонтирован", bool(before.get("mounted")), before)
-            check("до соединения src пустой", before.get("src") == "", before.get("src"))
-            check("до соединения видна подсказка", bool(before.get("emptyVisible")))
+            # Сокета нет — превью берётся из выбранного файла (комбо уже
+            # выбрало первый файл папки input).
+            check(
+                "без сокета превью показывает файл из комбо",
+                bool(before.get("src")) and "type=input" in (before.get("src") or ""),
+                before.get("src"),
+            )
+            check("без сокета подсказка не показывается (файл есть)", not before.get("emptyVisible"))
 
             # Порядок виджетов на теле ноды (снизу вверх в UI — как в INPUT_TYPES).
             order = await cdp.eval(
@@ -330,18 +338,24 @@ async def main() -> int:
                 "fill",
                 "dim_outside",
                 "golden_ratio",
+                "image_file",
             ]
             check("порядок виджетов как в задании", order == expected_order, order)
 
             await cdp.eval(
                 "(() => { const c = window.__probeCrop, l = window.__probeLoad;"
-                " return l.connect(0, c, 0); })()"
+                " const i = c.inputs.findIndex((s) => s.name === 'image');"
+                " window.__probeImageSlot = i;"
+                " return l.connect(0, c, i); })()"
             )
             diag = await cdp.eval(
                 "(() => { const c = window.__probeCrop; const s = c.__deggCrop.state;"
                 " return { INPUT: window.LiteGraph && window.LiteGraph.INPUT,"
-                " hooked: typeof c.onConnectionsChange, link: c.inputs[0] && c.inputs[0].link,"
-                " up: c.getInputNode && c.getInputNode(0) && c.getInputNode(0).id,"
+                " hooked: typeof c.onConnectionsChange,"
+                " slot: window.__probeImageSlot,"
+                " link: c.inputs[window.__probeImageSlot] && c.inputs[window.__probeImageSlot].link,"
+                " up: c.getInputNode && c.getInputNode(window.__probeImageSlot)"
+                "   && c.getInputNode(window.__probeImageSlot).id,"
                 " imgs: (window.__probeLoad.imgs || []).map((i) => i && i.src),"
                 " img: s.img, key: s.key, src: c.__deggCrop.widget.querySelector('.degg-crop__img').getAttribute('src') }; })()"
             )
@@ -368,6 +382,81 @@ async def main() -> int:
             check("превью появилось после connect", "example.png" in after.get("src", ""), after.get("src"))
             check("размер источника прочитан", after.get("natural") == [768, 768], after.get("natural"))
             check("подсказка скрыта", not after.get("emptyVisible"))
+            # ── Режим «файл из input» без подключённого сокета ──────────────
+            # 1) отключаем сокет image, 2) выбираем файл, 3) ждём превью.
+            up_file = await cdp.eval(
+                "(() => { const n = window.__probeCrop, c = n;"
+                " const up = c.getInputNode && c.getInputNode(window.__probeImageSlot);"
+                " const w = up && (up.widgets || []).find((x) => x.name === 'image');"
+                " return w ? String(w.value || '') : ''; })()"
+            )
+            await cdp.eval(
+                "(() => { const c = window.__probeCrop, l = window.__probeLoad;"
+                " const i = window.__probeImageSlot;"
+                " return l.disconnectOutput(0, c); })()"
+            )
+            await asyncio.sleep(0.4)
+            # Файл из комбо выбираем ОТЛИЧНЫМ от файла upstream-ноды — иначе
+            # нельзя отличить «превью из сокета» от «превью из файла».
+            await cdp.eval(
+                "(() => { window.__probeUpFile = %s; return 1; })()" % json.dumps(up_file)
+            )
+            file_state = await cdp.eval(
+                "(() => { const n = window.__probeCrop, c = n;"
+                " const w = (n.widgets || []).find((x) => x.name === 'image_file');"
+                " if (!w) return { found: false };"
+                " const raw = w.options;"
+                " const vals = Array.isArray(raw) ? raw"
+                "   : (raw && Array.isArray(raw.values) ? raw.values"
+                "   : (raw && Array.isArray(raw.options) ? raw.options : []));"
+                " const upFile = window.__probeUpFile || '';"
+                " const other = vals.find((v) => String(v) !== upFile) || '';"
+                " w.value = other;"
+                " w.callback && w.callback(other, app.canvas, n);"
+                " return { found: true, value: w.value, upFile, count: vals.length }; })()"
+            )
+            check("виджет выбора файла есть на ноде", (file_state or {}).get("found") is True, file_state)
+            check(
+                "список файлов input подхвачен комбо",
+                int((file_state or {}).get("count") or 0) > 0,
+                file_state,
+            )
+            await asyncio.sleep(1.2)
+            file_after = await cdp.eval(STATE_JS)
+            check(
+                "без сокета превью показывает выбранный файл",
+                bool((file_state or {}).get("value"))
+                and (file_state or {}).get("value") in (file_after.get("src") or "")
+                and "type=input" in (file_after.get("src") or ""),
+                {"file": (file_state or {}).get("value"), "src": file_after.get("src")},
+            )
+            natural_file = file_after.get("natural") or [0, 0]
+            check(
+                "размер выбранного файла прочитан",
+                natural_file[0] > 0 and natural_file[1] > 0,
+                natural_file,
+            )
+            check(
+                "подсказка «подключите изображение» скрыта (файл есть)",
+                not file_after.get("emptyVisible"),
+                file_after.get("emptyVisible"),
+            )
+            # Обратно: сокет снова главный — превью берётся из подключения.
+            await cdp.eval(
+                "(() => { const c = window.__probeCrop, l = window.__probeLoad;"
+                " return l.connect(0, c, window.__probeImageSlot); })()"
+            )
+            await asyncio.sleep(1.0)
+            back = await cdp.eval(STATE_JS)
+            check(
+                "после возврата сокета превью снова из подключения",
+                bool(up_file)
+                and up_file in (back.get("src") or "")
+                and (file_state or {}).get("value") not in (back.get("src") or ""),
+                {"upstream": up_file, "file": (file_state or {}).get("value"), "src": back.get("src")},
+            )
+
+
             outputs_diag = await cdp.eval(
                 "(() => ({ keys: Object.keys(app.nodeOutputs || {}),"
                 " v72: (app.nodeOutputs || {})['72'] || null,"
@@ -1238,7 +1327,7 @@ async def main() -> int:
             )
 
             h_before = wide.get("widgetHeight") or 0
-            await cdp.eval("(() => { window.__probeCrop.setSize([600, 700]); return 1; })()")
+            await cdp.eval("(() => { window.__probeCrop.setSize([600, 1200]); return 1; })()")
             await asyncio.sleep(0.6)
             tall = await cdp.eval(STATE_JS)
             check(
@@ -1248,7 +1337,7 @@ async def main() -> int:
             )
             check(
                 "DOM-виджет не вылезает за ноду",
-                (tall.get("rootBox") or {}).get("h", 0) <= 700,
+                (tall.get("rootBox") or {}).get("h", 0) <= 1200,
                 tall.get("rootBox"),
             )
 

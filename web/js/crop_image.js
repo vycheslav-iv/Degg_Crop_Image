@@ -31,6 +31,12 @@ const WIDGET_ORDER = [
   'fill',
   'dim_outside',
   'golden_ratio',
+  // Служебные виджеты состояния и выбор файла — в самом конце: старые
+  // воркфлоу (без именованной карты) хранят значения виджетов позиционно,
+  // и новый виджет в начале списка сдвинул бы все значения на шаг.
+  'crop_rect',
+  'output_size',
+  'image_file',
 ];
 const CSS_ID = 'degg-crop-image-css';
 const MIN_H = 180;
@@ -47,6 +53,9 @@ const MEGAPIXEL_UNIT = 1024 * 1024;
 // Минимальный размер кадра, px: ручная правка размера и смена пропорций.
 const MIN_CROP_PX = 16;
 const MIN_RATIO_PX = 8;
+// Отступ DOM-виджета (как у остальных виджетов фронтенда) — входит в
+// минимальную высоту, которую виджет сообщает фронтенду.
+const WIDGET_MARGIN = 4;
 // Золотое сечение: точки деления кадра — 1/φ и 1−1/φ (0.618 и 0.382).
 // Линии сетки всегда стоят в этих точках ТЕКУЩЕЙ рамки, поэтому при
 // изменении её размера сетка пересчитывается (как в Capture One).
@@ -492,12 +501,26 @@ function widgetByName(node, name) {
   return (node.widgets || []).find((w) => w.name === name) || null;
 }
 
+/**
+ * Индекс входного сокета «image».
+ *
+ * Сокет image — НЕОБЯЗАТЕЛЬНЫЙ (нода умеет работать с файлом из input без
+ * подключения), поэтому он НЕ первый во входах: обязательные входы идут
+ * первыми. Искать upstream по индексу 0 нельзя — только по имени.
+ */
+function imageSlotIndex(node) {
+  const inputs = node.inputs || [];
+  const index = inputs.findIndex((slot) => slot?.name === 'image');
+  return index >= 0 ? index : 0;
+}
+
 function upstreamNode(node) {
-  const source = node.getInputNode?.(0);
+  const index = imageSlotIndex(node);
+  const source = node.getInputNode?.(index);
   if (!source) return null;
   try {
     if (source.isSubgraphNode?.()) {
-      const link = node.getInputLink?.(0);
+      const link = node.getInputLink?.(index);
       const resolved = source.resolveSubgraphOutputLink?.(link?.origin_slot);
       if (resolved?.outputNode) return resolved.outputNode;
     }
@@ -531,9 +554,37 @@ function viewUrl(image) {
   return typeof api?.apiURL === 'function' ? api.apiURL(path) : path;
 }
 
+/**
+ * Имя файла из виджета выбора (в новом фронтенде значение может быть
+ * аннотированным путём-объектом или строкой).
+ */
+function fileWidgetName(node) {
+  const widget = widgetByName(node, 'image_file');
+  const value = widget?.value;
+  if (typeof value === 'string') return value.trim();
+  if (value && typeof value === 'object') {
+    const name = value.name ?? value.filename ?? '';
+    const sub = value.subfolder ? `${value.subfolder}/` : '';
+    return sub ? `${sub}${name}` : String(name);
+  }
+  return '';
+}
+
+/** Превью файла из input (как у LoadImage). */
+function filePreviewUrl(node) {
+  const name = fileWidgetName(node);
+  if (!name) return null;
+  const clean = name.replace(/\\/g, '/').replace(/^\//, '');
+  return viewUrl({ filename: clean, subfolder: '', type: 'input' });
+}
+
 function previewFor(node) {
   const source = upstreamNode(node);
-  if (!source) return { key: '', url: null };
+  if (!source) {
+    // Сокет не подключён — показываем выбранный файл (если он есть).
+    const url = filePreviewUrl(node);
+    return url ? { key: `f:${fileWidgetName(node)}`, url } : { key: '', url: null };
+  }
 
   const key = locatorIdFor(source);
   const previews = app?.nodePreviewImages?.[key];
@@ -911,7 +962,9 @@ function createEditor(node, widget) {
   }
 
   function refreshLayoutSize() {
-    widget.computeLayoutSize = () => ({ minWidth: 260, minHeight: desiredHeight() });
+    // Размер сообщается фронтенду через getMinHeight (см. addDOMWidget):
+    // он зовёт его при каждой раскладке, поэтому пересчитывать вручную
+    // и переопределять computeLayoutSize здесь не нужно.
     node.graph?.setDirtyCanvas?.(true);
   }
 
@@ -1500,6 +1553,11 @@ function createEditor(node, widget) {
     setMegaPixels();
   });
 
+  // Смена выбранного файла (режим «без сокета») — перезагружаем превью.
+  onWidgetChange(widgetByName(node, 'image_file'), () => {
+    loadSource({ force: true });
+  });
+
   // Изменение «косметики» и параметров выхода перерисовывает сцену сразу:
   // без этого затемнение и плашка отстают до следующего resize/drag.
   for (const widget of [dimWidget, fillWidget, multWidget, goldenWidget]) {
@@ -1617,6 +1675,7 @@ function createEditor(node, widget) {
     layout,
     commit,
     state,
+    desiredHeight,
   };
 }
 
@@ -1633,6 +1692,16 @@ function setupNode(node) {
     hideInPanel: true,
     hideOnZoom: false,
     serialize: false,
+    // Минимальная высота — через ОПЦИИ, а не поздним переопределением
+    // computeLayoutSize: фронтенд вычисляет признак «растягиваемый виджет»
+    // (hasLayoutSize) при ПЕРВОМ рендере, когда переопределения ещё нет.
+    // Без этого строка сетки остаётся 'min-content' и превью не растёт
+    // вместе с нодой.
+    getMinHeight: () => {
+      const editor = node.__deggCrop;
+      const height = editor ? editor.desiredHeight() : MIN_H;
+      return height + WIDGET_MARGIN * 2;
+    },
   });
   widget.serialize = false;
 

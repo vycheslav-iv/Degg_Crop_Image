@@ -578,7 +578,10 @@ check(
 )
 check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom_nodes/Image")
 # Интерфейсные входы объявлены НЕОБЯЗАТЕЛЬНЫМИ: сервер их не читает, и API
-# не должен требовать их передавать. Порядок виджетов на теле ноды задаёт
+# не должен требовать их передавать. (Сокет image и выбор файла image_file
+# вынесены из этого списка: image — optional, а image_file обязан быть
+# required, иначе фронтенд не покажет кнопку загрузки файла.)
+# Порядок виджетов на теле ноды задаёт
 # редактор (WIDGET_ORDER в web/js/crop_image.js) — он проверяется аудитом и
 # живой DOM-пробой.
 INTERFACE_INPUTS = [
@@ -617,6 +620,26 @@ check(
     "лишних параметров в crop() нет",
     not (_params - _declared - {"self"}),
     sorted(_params - _declared - {"self"}),
+)
+check(
+    "режим файла: сокет image и файл — необязательные входы",
+    # сокет image — optional (нода работает и без подключения)
+    "image" in types["optional"]
+    and types["optional"]["image"][0] == "IMAGE"
+    # файл — необязательный комбо: сервер проверяет значение комбо по
+    # списку, и обязательный вход заставил бы API подставлять имя файла
+    # даже при подключённом сокете. Кнопку загрузки файла фронтенд рисует
+    # прямо в комбо (image_upload), отдельный вход «upload» не нужен.
+    and "image_file" in types["optional"]
+    and isinstance(types["optional"]["image_file"][0], list)
+    and types["optional"]["image_file"][1].get("image_upload") is True
+    and "upload" not in types["required"]
+    and "upload" not in types["optional"],
+    {
+        "required": list(types["required"]),
+        "optional": list(types["optional"]),
+        "image_file_options": types["optional"]["image_file"][1],
+    },
 )
 check(
     "мегапиксели и прочее остались обязательными",

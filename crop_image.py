@@ -242,6 +242,81 @@ def _mask_alpha(
     return 1.0 - region
 
 
+def input_image_files():
+    """Image files of the input folder (like LoadImage).
+
+    The list is only a hint for the frontend combo; the node itself reads the
+    file by name at run time. Without ComfyUI (unit tests) the list is empty.
+    """
+    try:
+        import os
+
+        import folder_paths
+    except Exception:
+        return []
+    try:
+        base = folder_paths.get_input_directory()
+        files = [f for f in os.listdir(base) if os.path.isfile(os.path.join(base, f))]
+        files = folder_paths.filter_files_content_types(files, ["image"])
+        return sorted(files)
+    except Exception:
+        return []
+
+
+def load_source_file(name: str):
+    """Load an image file from the input folder (like LoadImage).
+
+    Returns ``(image_tensor, mask)`` or ``(None, None)`` if the file is
+    missing/unreadable. The mask follows the ComfyUI convention: 1 = the area
+    is hidden (the file's transparent alpha).
+    """
+    if not name:
+        return None, None
+    try:
+        import numpy as np
+        from PIL import Image
+
+        import folder_paths
+    except Exception:
+        return None, None
+
+    text = str(name).strip()
+    if text.startswith("["):  # старый формат аннотированного пути
+        try:
+            import json
+
+            text = json.loads(text)[0]
+        except Exception:
+            return None, None
+    # Новый формат фронтенда: "имя.png [output]" / "имя.png [temp]".
+    for marker in (" [output]", " [temp]", " [input]"):
+        if text.lower().endswith(marker):
+            text = text[: -len(marker)].strip()
+            break
+    text = text.replace("\\", "/").lstrip("/")
+    base = folder_paths.get_input_directory().replace("\\", "/").rstrip("/")
+    path = text
+    if not text.startswith(base):
+        path = f"{base}/{text}"
+    if not path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp")):
+        return None, None
+    try:
+        with Image.open(path) as handle:
+            image = handle.convert("RGB")
+            array = np.array(image).astype(np.float32) / 255.0
+            alpha = None
+            if "A" in handle.getbands():
+                alpha = 1.0 - np.array(handle.getchannel("A")).astype(np.float32) / 255.0
+    except Exception:
+        return None, None
+
+    tensor = torch.from_numpy(array)[None, ...]
+    mask = None
+    if alpha is not None:
+        mask = torch.from_numpy(alpha)[None, ...]
+    return tensor, mask
+
+
 def _fill_color(mode: str, channels: int):
     if mode == "black":
         rgb = (0.0, 0.0, 0.0)
@@ -330,7 +405,6 @@ class DeggCropImage:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image": ("IMAGE", {"tooltip": "Source image batch."}),
                 "megapixels": (
                     "FLOAT",
                     {
@@ -378,6 +452,30 @@ class DeggCropImage:
             # Скрытые служебные входы — необязательные: API не должен требовать
             # их передавать (значения по умолчанию корректны).
             "optional": {
+                # Источник: подключённый сокет ИЛИ файл из input. Если сокет
+                # подключён — он главный; если нет — берётся файл (и его альфа
+                # становится маской, как в LoadImage).
+                "image": (
+                    "IMAGE",
+                    {
+                        "tooltip": "Source image batch. Leave unconnected to use the "
+                        "file selected below.",
+                    },
+                ),
+                # Файл из папки input — запасной источник, когда сокет не
+                # подключён. Комбо с image_upload: штатная кнопка загрузки
+                # файла появляется прямо в этом виджете (WidgetSelect).
+                # Вход необязательный: сервер проверяет значение комбо по
+                # списку, и обязательный вход заставил бы API подставлять
+                # имя файла даже при подключённом сокете.
+                "image_file": (
+                    input_image_files(),
+                    {
+                        "image_upload": True,
+                        "tooltip": "Image file from the input folder. Used when the "
+                        "image socket is not connected.",
+                    },
+                ),
                 # Скрытые служебные значения (состояние кадра и ручной размер
                 # результата) и элементы управления редактором. Сервер читает
                 # только crop_rect/output_size/megapixels/multiplicity —
@@ -489,7 +587,8 @@ class DeggCropImage:
 
     def crop(
         self,
-        image,
+        image=None,
+        image_file="",
         aspect_ratio="free",
         lock_ratio=True,
         center_x=0,
@@ -506,6 +605,14 @@ class DeggCropImage:
         golden_ratio=False,  # только отображение (сетка в превью), сервер не читает
         mask=None,
     ):
+        # Источник: подключённый сокет главный; иначе — файл из input
+        # (и его альфа становится маской, как в LoadImage).
+        file_mask = None
+        if image is None:
+            image, file_mask = load_source_file(image_file)
+        if mask is None and file_mask is not None:
+            mask = file_mask
+
         if image is None or int(getattr(image, "shape", (0,))[0] or 0) == 0:
             empty = torch.zeros((1, max(int(multiplicity), 1), max(int(multiplicity), 1), 3))
             return (empty, torch.zeros((1, int(multiplicity), int(multiplicity))), 0, 0)

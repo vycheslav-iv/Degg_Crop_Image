@@ -47,7 +47,6 @@ check("Python: нет IS_CHANGED (кэш зависит от входа)", !/def
 const required = PY.slice(PY.indexOf('"required": {'), PY.indexOf('"optional": {'));
 const inputNames = [...required.matchAll(/^ {16}"?([a-z_]+)"?:\s*\(/gm)].map((m) => m[1]);
 const EXPECTED_REQUIRED = [
-  "image",
   "megapixels",
   "multiplicity",
   "resample",
@@ -55,6 +54,8 @@ const EXPECTED_REQUIRED = [
   "dim_outside",
 ];
 const EXPECTED_OPTIONAL = [
+  "image",
+  "image_file",
   "crop_rect",
   "output_size",
   "lock_ratio",
@@ -120,7 +121,14 @@ check("Python: multiplicity 8..128 step 4 (как ResolutionSelector)", /"multip
 check("Python: кадр хранится в долях (нормализован)", /MIN_FRACTION|MAX_FRACTION/.test(PY));
 check("Python: mask заменяет альфу источника", /mask is not None/.test(PY));
 check("Python: нет транспортного хака _mp в rect", !/_mp\b/.test(PY));
-check("Python: нет folder_paths/server (нода без ComfyUI)", !/^\s*(import|from)\s+(folder_paths|server|aiohttp)\b/m.test(PY));
+check("Python: folder_paths только для режима файла, импорт ленивый", /import folder_paths/.test(PY) && /def load_source_file/.test(PY) && !/^import folder_paths/m.test(PY));
+check(
+  "Python: нет серверных вызовов ComfyUI (нода без сервера)",
+  !/^\s*(import|from)\s+(server|aiohttp)\b/m.test(PY)
+    // folder_paths — только для режима «файл из input», импорт ЛЕНИВЫЙ
+    // (внутри функции), чтобы нода оставалась пригодной без ComfyUI.
+    && !/^(import|from)\s+folder_paths\b/m.test(PY),
+);
 
 // ── __init__.py ────────────────────────────────────────────────────────────
 check("init: WEB_DIRECTORY = ./web", /WEB_DIRECTORY\s*=\s*"\.\/web"/.test(INIT));
@@ -438,6 +446,7 @@ check(
 const WIDGET_ORDER_EXPECTED = [
   "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
   "megapixels", "multiplicity", "resample", "fill", "dim_outside", "golden_ratio",
+  "crop_rect", "output_size", "image_file",
 ];
 const orderBlock = (JS.slice(JS.indexOf("const WIDGET_ORDER = [")).split("];")[0] || "");
 const orderFound = [...orderBlock.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);

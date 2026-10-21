@@ -3,6 +3,10 @@
     "display_name": "Degg Crop Image",
     "description": "Crop any part of the image or extend the frame outside its borders.",
     "inputs": {
+      "image_file": {
+        "name": "Image file",
+        "tooltip": "A file from the input folder. Used when the Image socket is not connected."
+      },
       "image": {
         "name": "Image",
         "tooltip": "Source image batch."
@@ -69,10 +73,18 @@
       }
     },
     "outputs": {
-      "0": { "name": "image" },
-      "1": { "name": "mask" },
-      "2": { "name": "width" },
-      "3": { "name": "height" }
+      "0": {
+        "name": "image"
+      },
+      "1": {
+        "name": "mask"
+      },
+      "2": {
+        "name": "width"
+      },
+      "3": {
+        "name": "height"
+      }
     }
   }
 }
