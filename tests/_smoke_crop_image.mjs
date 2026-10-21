@@ -76,7 +76,7 @@ vm.runInContext(src + "\nglobalThis.__RATIOS = RATIO_VALUES;\n", ctx, { filename
 
 const { pyRound, computeOutputSize, parseRectFrac, clampFrac, resizeFrame } = ctx;
 const { centerFrameFrac, fitFrameFrac, frameCenterOffset, moveFrameToOffset, axisDelta } = ctx;
-const { snapSize, outputSizeFor, frameWithRatio } = ctx;
+const { snapSize, outputSizeFor, frameWithRatio, parseManualSize, fracRatio, ratiosMatch } = ctx;
 
 // ── 1. pyRound = Python round() (banker's) ──────────────────────────────────
 check("pyRound(0.5) == 0", pyRound(0.5) === 0, pyRound(0.5));
@@ -326,6 +326,45 @@ check(
   "размер: пропорции рамки становятся 1:1",
   near1(squared.w * 1000, squared.h * 500),
   JSON.stringify(squared),
+);
+
+// ── 9. Разбор ручного размера и сверка пропорций ───────────────────────────
+check("ручной размер: пустое поле = режим «по мегапикселям»", parseManualSize("") === null, parseManualSize(""));
+check("ручной размер: разбирается «Ш,В»", (() => {
+  const m = parseManualSize("1000,1000");
+  return m && m.w === 1000 && m.h === 1000;
+})(), parseManualSize("1000,1000"));
+check("ручной размер: разбирается «ШxВ»", (() => {
+  const m = parseManualSize("1336x752");
+  return m && m.w === 1336 && m.h === 752;
+})(), parseManualSize("1336x752"));
+check("ручной размер: мусор не превращается в значение", parseManualSize("abc") === null, parseManualSize("abc"));
+check("ручной размер: нули отбрасываются", parseManualSize("0,0") === null, parseManualSize("0,0"));
+
+// Пропорции кадра считаются по ПИКСЕЛЯМ: доли на неквадратном источнике
+// дают другое отношение, чем пиксели.
+check(
+  "пропорции кадра: по пикселям, а не по долям",
+  (() => {
+    const frac = { w: 0.636412, h: 0.633926 };
+    const byFrac = frac.w / frac.h;
+    const byPx = fracRatio(frac, 2720, 1536);
+    return Math.abs(byFrac - 1) < 0.01 && Math.abs(byPx - 16 / 9) < 0.01;
+  })(),
+  fracRatio({ w: 0.636412, h: 0.633926 }, 2720, 1536),
+);
+
+check(
+  "сверка пропорций: совпадающие — да",
+  ratiosMatch({ w: 0.5, h: 0.5 }, { w: 1000, h: 1000 }, 1000, 1000) === true,
+);
+check(
+  "сверка пропорций: расходящиеся — нет (устаревший ручной размер)",
+  ratiosMatch({ w: 0.636412, h: 0.633926 }, { w: 1448, h: 1448 }, 2720, 1536) === false,
+);
+check(
+  "сверка пропорций: без ручного размера — всегда да",
+  ratiosMatch({ w: 0.1, h: 0.9 }, null, 2720, 1536) === true,
 );
 
 // ── итог ───────────────────────────────────────────────────────────────────

@@ -22,6 +22,15 @@ const MAX_H = 560;
 const PAD = 10;
 const HANDLE = 10;
 const EDGE_HIT = 12;
+// Предел доли кадра: уходить за кадром дальше бессмысленно.
+const MAX_FRAC = 100;
+// Допуск, в котором пропорции кадра и результата считаются совпадающими.
+const RATIO_TOLERANCE = 0.005;
+// «Один мегапиксель» в единицах ноды (паритет с ResolutionSelector: 1024×1024 px).
+const MEGAPIXEL_UNIT = 1024 * 1024;
+// Минимальный размер кадра, px: ручная правка размера и смена пропорций.
+const MIN_CROP_PX = 16;
+const MIN_RATIO_PX = 8;
 
 const RATIO_VALUES = {
   '1:1': 1,
@@ -162,12 +171,11 @@ export function parseRectFrac(raw) {
 }
 
 export function clampFrac(rect) {
-  const max = 100;
   return {
-    x: Math.min(Math.max(rect.x, -max), max),
-    y: Math.min(Math.max(rect.y, -max), max),
-    w: Math.min(Math.max(rect.w, 1e-4), max),
-    h: Math.min(Math.max(rect.h, 1e-4), max),
+    x: Math.min(Math.max(rect.x, -MAX_FRAC), MAX_FRAC),
+    y: Math.min(Math.max(rect.y, -MAX_FRAC), MAX_FRAC),
+    w: Math.min(Math.max(rect.w, 1e-4), MAX_FRAC),
+    h: Math.min(Math.max(rect.h, 1e-4), MAX_FRAC),
   };
 }
 
@@ -248,7 +256,7 @@ export function outputSizeFor(rectW, rectH, megapixels, multiplicity, manual) {
  * Задать рамке пропорции, сохранив её площадь и центр
  * (то же, что делает выбор пресета пропорций).
  */
-export function frameWithRatio(rect, imgW, imgH, ratio, minPx = 8) {
+export function frameWithRatio(rect, imgW, imgH, ratio, minPx = MIN_RATIO_PX) {
   const w0 = Number(rect?.w) * imgW;
   const h0 = Number(rect?.h) * imgH;
   if (!(imgW > 0) || !(imgH > 0) || !(w0 > 0) || !(h0 > 0)) return { ...rect };
@@ -274,13 +282,39 @@ export function frameWithRatio(rect, imgW, imgH, ratio, minPx = 8) {
   });
 }
 
+/** Разобрать ручной размер результата "Ш,В" из скрытого поля. */
+export function parseManualSize(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const parts = text.split(/[,x×\s]+/).filter(Boolean).map(Number);
+  if (parts.length < 2) return null;
+  if (!Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return null;
+  if (parts[0] <= 0 || parts[1] <= 0) return null;
+  return { w: parts[0], h: parts[1] };
+}
+
+/** Пропорции кадра (в долях) относительно размера источника, в пикселях. */
+export function fracRatio(frac, imgW, imgH) {
+  const w = Number(frac?.w) * imgW;
+  const h = Number(frac?.h) * imgH;
+  return w > 0 && h > 0 ? w / h : 1;
+}
+
+/** Совпадают ли пропорции кадра и ручного результата (с допуском). */
+export function ratiosMatch(frac, manual, imgW, imgH, tolerance = RATIO_TOLERANCE) {
+  if (!manual) return true;
+  const wanted = manual.w / manual.h;
+  if (!Number.isFinite(wanted) || wanted <= 0) return false;
+  return Math.abs(fracRatio(frac, imgW, imgH) - wanted) / wanted < tolerance;
+}
+
 /** Shift-constrained move: lock to the dominant axis. */
 export function axisDelta(dx, dy) {
   return Math.abs(dx) >= Math.abs(dy) ? { dx, dy: 0 } : { dx: 0, dy };
 }
 
 /** Resize a source-space frame from a drag delta. */
-export function resizeFrame(start, dx, dy, kind, ratio, imgW, imgH, minPx = 16) {
+export function resizeFrame(start, dx, dy, kind, ratio, imgW, imgH, minPx = MIN_CROP_PX) {
   let x0 = start.x;
   let y0 = start.y;
   let x1 = start.x + start.w;
@@ -500,6 +534,7 @@ function previewFor(node) {
 function createEditor(node, widget) {
   css();
 
+  // ── DOM ──────────────────────────────────────────────────────────────────
   const root = make('div', 'degg-crop');
   const bar = make('div', 'degg-crop__bar', root);
   const stage = make('div', 'degg-crop__stage', root);
@@ -538,28 +573,35 @@ function createEditor(node, widget) {
     buttonEls[id] = button;
   }
 
+  // ── СОСТОЯНИЕ ───────────────────────────────────────────────────────────
+  // Два источника истины:
+  //   frac   — геометрия кадра в долях источника (сериализуется в crop_rect);
+  //   manual — ручной размер результата в px (сериализуется в output_size),
+  //            null = размер результата считается по мегапикселям.
+  // Всё остальное — производные величины: они нигде не хранятся, а считаются
+  // функциями (cropPx, cropRatio, resultSize, effectiveRatio).
   const state = {
     frac: { x: 0, y: 0, w: 1, h: 1 },
-    img: null,
-    key: '',
-    scale: 1,
+    manual: null,
+    img: null, // размер источника в пикселях
+    key: '', // ключ превью (чтобы не грузить одно и то же)
+    scale: 1, // параметры отрисовки сцены
     offX: 0,
     offY: 0,
     drag: null,
     pending: false,
-    ratioLock: null,
-    suppress: 0,
-    manual: null,
+    ratioLock: null, // захваченные пропорции кадра (px), когда замок без пресета
+    suppress: 0, // счётчик программных записей в виджеты
   };
 
   const cropWidget = widgetByName(node, 'crop_rect');
+  const outputSizeWidget = widgetByName(node, 'output_size');
   const aspectWidget = widgetByName(node, 'aspect_ratio');
   const lockWidget = widgetByName(node, 'lock_ratio');
   const centerXWidget = widgetByName(node, 'center_x');
   const centerYWidget = widgetByName(node, 'center_y');
   const frameWWidget = widgetByName(node, 'frame_w');
   const frameHWidget = widgetByName(node, 'frame_h');
-  const outputSizeWidget = widgetByName(node, 'output_size');
   const dimWidget = widgetByName(node, 'dim_outside');
   const multWidget = widgetByName(node, 'multiplicity');
   const mpWidget = widgetByName(node, 'megapixels');
@@ -569,182 +611,9 @@ function createEditor(node, widget) {
   setOptionLabels(aspectWidget, labels().aspect);
   setOptionLabels(fillWidget, labels().fill);
 
-  function ratio() {
-    const value = aspectWidget?.value;
-    return RATIO_VALUES[value] ?? null;
-  }
-
-  function locked() {
-    return !!lockWidget?.value;
-  }
-
-  function currentPxRatio() {
-    const r = pxRect();
-    return r.w > 0 && r.h > 0 ? r.w / r.h : null;
-  }
-
-  // «Зафиксировано» держит либо выбранный пресет, либо пропорции, которые были
-  // у рамки в момент включения (когда в списке «Свободные»).
-  function effectiveRatio() {
-    const preset = ratio();
-    if (preset) return preset;
-    if (!locked()) return null;
-    return state.ratioLock ?? currentPxRatio();
-  }
-
-  function programmatic(widget, value) {
-    state.suppress += 1;
-    try {
-      return setWidgetValue(widget, value);
-    } finally {
-      state.suppress -= 1;
-    }
-  }
-
-  // Координаты — обычные INT-виджеты ноды (нижние опции). Значение пишется
-  // ТИХО (без callback'а), иначе перетаскивание рамки запускало бы пересчёт
-  // ноды на каждом кадре.
-  function syncCoords() {
-    if (!state.img) {
-      setWidgetValueQuiet(centerXWidget, 0);
-      setWidgetValueQuiet(centerYWidget, 0);
-      return;
-    }
-    const offset = frameCenterOffset(state.frac, state.img.w, state.img.h);
-    setWidgetValueQuiet(centerXWidget, Math.round(offset.x));
-    setWidgetValueQuiet(centerYWidget, Math.round(offset.y));
-  }
-
-  function applyCoords(valueX, valueY) {
-    if (!state.img) return;
-    const ox = Number(valueX ?? centerXWidget?.value);
-    const oy = Number(valueY ?? centerYWidget?.value);
-    if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
-    setFrac(moveFrameToOffset(state.frac, state.img.w, state.img.h, ox, oy));
-  }
-
-  // ── РАЗМЕР РЕЗУЛЬТАТА ──────────────────────────────────────────────────
-  // Поля «Ширина/Высота результата, px» — это ИТОГОВЫЙ размер картинки
-  // (те же числа, что в плашке и в выходах width/height), а не размер обреза.
-  //
-  // Два режима:
-  //  - по мегапикселям (обычный): выход = пропорции рамки + MP + кратность,
-  //    поля просто показывают результат;
-  //  - ручной: выход = введённое число (округлённое до кратности), мегапиксели
-  //    показывают эквивалент и правкой MP возвращают обычный режим.
-  // Чтобы кадр не искажался, в ручном режиме пропорции рамки приводятся к
-  // пропорциям результата (площадь и центр сохраняются).
-  function currentOutput() {
-    // Пропорции результата — по ПИКСЕЛЯМ кадра (как в Python: rect.w*src_w :
-    // rect.h*src_h). По долям пропорции другие: у неквадратного источника
-    // кадр 1731×974 px (16:9) в долях выглядит как квадрат 0.636×0.634.
-    const r = pxRect();
-    return outputSizeFor(
-      r.w,
-      r.h,
-      mpWidget?.value ?? 2,
-      multWidget?.value ?? 8,
-      state.manual,
-    );
-  }
-
-  // Инвариант: пропорции кадра и пропорции ручного результата должны
-  // совпадать, иначе кадр растянулся бы (а MP и пресет пропорций врали бы).
-  // Разошлись — значит ручной размер устарел (например, остался от прошлого
-  // воркфлоу): возвращаем обычный режим «по мегапикселям».
-  function reconcileManual() {
-    if (!state.manual || !state.img) return;
-    const r = pxRect();
-    if (!(r.w > 0) || !(r.h > 0)) return;
-    const frameRatio = r.w / r.h;
-    const manualRatio = state.manual.w / state.manual.h;
-    if (!Number.isFinite(frameRatio) || !Number.isFinite(manualRatio)) return;
-    if (Math.abs(frameRatio - manualRatio) / manualRatio < 0.005) return;
-    clearManual();
-  }
-
-  function syncSize() {
-    if (!state.img) {
-      setWidgetValueQuiet(frameWWidget, 0);
-      setWidgetValueQuiet(frameHWidget, 0);
-      return;
-    }
-    reconcileManual();
-    const out = currentOutput();
-    setWidgetValueQuiet(frameWWidget, out.w);
-    setWidgetValueQuiet(frameHWidget, out.h);
-  }
-
-  // Ручной размер хранится в скрытом поле output_size: "" = режим MP.
-  function writeManual() {
-    if (!outputSizeWidget) return;
-    const value = state.manual ? `${state.manual.w},${state.manual.h}` : '';
-    setWidgetValueQuiet(outputSizeWidget, value);
-  }
-
-  function readManual() {
-    const raw = String(outputSizeWidget?.value ?? '').trim();
-    if (!raw) {
-      state.manual = null;
-      return;
-    }
-    const parts = raw.split(/[,x×\s]+/).map((v) => Number(v));
-    if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) {
-      state.manual = null;
-      return;
-    }
-    state.manual = { w: parts[0], h: parts[1] };
-  }
-
-  function clearManual() {
-    if (!state.manual) return;
-    state.manual = null;
-    writeManual();
-  }
-
-  // Мегапиксели в ручном режиме показывают эквивалент результата
-  // (в единицах ноды: 1 MP = 1024×1024 px).
-  function syncMpToManual() {
-    if (!state.manual || !mpWidget) return;
-    const out = currentOutput();
-    setWidgetValueQuiet(mpWidget, (out.w * out.h) / (1024 * 1024));
-  }
-
-  // Свободный drag меняет пропорции рамки — ручной размер под них подстраивается
-  // (ширина сохраняется, высота следует), без рывков. Считаем по НОВОМУ кадру
-  // (до setFrac), иначе инвариант сбросил бы ручной режим.
-  function adaptManualToFrame(nextFrac) {
-    if (!state.manual || !state.img) return;
-    const r = nextFrac || state.frac;
-    const w = Number(r.w) * state.img.w;
-    const h = Number(r.h) * state.img.h;
-    if (!(w > 0) || !(h > 0)) return;
-    const ratio = w / h;
-    const nextH = state.manual.w / ratio;
-    if (Math.abs(nextH - state.manual.h) < 0.5) return;
-    state.manual = { w: state.manual.w, h: nextH };
-    writeManual();
-    syncMpToManual();
-  }
-
-  function applySize(axis, value) {
-    if (!state.img) return;
-    const size = Number(value);
-    if (!Number.isFinite(size) || size <= 0) {
-      syncSize(); // нелегальное значение — возвращаем настоящий размер
-      return;
-    }
-    const out = currentOutput();
-    state.manual = axis === 'h' ? { w: out.w, h: size } : { w: size, h: out.h };
-    const snapped = snapSize(state.manual, multWidget?.value ?? 8);
-    state.manual = { w: snapped.w, h: snapped.h };
-    writeManual();
-    // Пропорции рамки = пропорции результата, иначе кадр растянется.
-    setFrac(frameWithRatio(state.frac, state.img.w, state.img.h, snapped.w / snapped.h));
-    syncMpToManual();
-  }
-
-  function pxRect() {
+  // ── ПРОИЗВОДНЫЕ ВЕЛИЧИНЫ ────────────────────────────────────────────────
+  /** Геометрия кадра в пикселях источника. */
+  function cropPx() {
     if (!state.img) return { x: 0, y: 0, w: 0, h: 0 };
     return {
       x: state.frac.x * state.img.w,
@@ -754,8 +623,225 @@ function createEditor(node, widget) {
     };
   }
 
+  /** Пропорции кадра по пикселям источника. */
+  function cropRatio() {
+    const r = cropPx();
+    return r.w > 0 && r.h > 0 ? r.w / r.h : 1;
+  }
+
+  /** Пресет пропорций из списка (протокольное значение). */
+  function ratio() {
+    return RATIO_VALUES[aspectWidget?.value] ?? null;
+  }
+
+  function locked() {
+    return !!lockWidget?.value;
+  }
+
+  /** «Зафиксировано» держит либо пресет, либо пропорции, которые были у кадра в
+   * момент включения (когда в списке «Свободные»). */
+  function effectiveRatio() {
+    const preset = ratio();
+    if (preset) return preset;
+    if (!locked()) return null;
+    return state.ratioLock ?? cropRatio();
+  }
+
+  function megapixels() {
+    return Number(mpWidget?.value ?? 2);
+  }
+
+  function multiplicity() {
+    return Math.max(1, Math.round(Number(multWidget?.value ?? 8)));
+  }
+
+  /** Итоговый размер результата: ручной размер важнее мегапикселей. */
+  function resultSize() {
+    if (state.manual) return snapSize(state.manual, multiplicity());
+    return computeOutputSize(cropPx().w, cropPx().h, megapixels(), multiplicity());
+  }
+
+  // ── ЗАПИСЬ В ВИДЖЕТ (единственная точка) ─────────────────────────────────
+  // call: true  — как это делает фронтенд: «виджет изменился, пересчитай ноду»;
+  //        false — тихая запись: значение отражает состояние, нода не
+  //                пересчитывается (иначе каждый кадр drag'а запускал бы пересчёт).
+  function writeWidget(widget, value, { call = false } = {}) {
+    if (!widget || widget.value === value) return false;
+    widget.value = value;
+    const id = widgetIdFor(widget);
+    try {
+      widgetStore()?.setValue?.(id, value);
+    } catch {
+      /* store may be unavailable in this frontend build */
+    }
+    if (call) {
+      try {
+        widget.callback?.(value, app?.canvas, node);
+      } catch {
+        /* a faulty callback must not break the editor */
+      }
+    }
+    node.setDirtyCanvas?.(true, true);
+    node.graph?.setDirtyCanvas?.(true, true);
+    return true;
+  }
+
+  /** Программная запись: callback виджета не должен запускать пользовательскую
+   * логику (иначе программная запись → callback → запись в виджет → цикл). */
+  function programmatic(widget, value) {
+    state.suppress += 1;
+    try {
+      return writeWidget(widget, value, { call: true });
+    } finally {
+      state.suppress -= 1;
+    }
+  }
+
+  function widgetIdFor(widget) {
+    const graphId = node.graph?.id ?? app?.rootGraph?.id;
+    if (!graphId || !widget?.name) return null;
+    return `${graphId}:${encodeURIComponent(String(node.id))}:${encodeURIComponent(widget.name)}`;
+  }
+
+  // Nodes 2.0 рисует виджеты из widgetValueStore, legacy — из widget.value.
+  // Пишем в оба места, иначе программная смена видна только в одном из режимов.
+  function widgetStore() {
+    const candidates = [
+      app?.widgetValueStore,
+      app?.extensionManager?.widgetValueStore,
+      window?.comfyAPI?.widgetValueStore,
+      window?.comfyAPI?.stores?.widgetValueStore,
+    ];
+    for (const store of candidates) {
+      if (store && typeof store.setValue === 'function') return store;
+    }
+    return null;
+  }
+
+  // ── СЕРИАЛИЗАЦИЯ ─────────────────────────────────────────────────────────
+  function persistState() {
+    if (!cropWidget) return;
+    if (state.pending) return;
+    state.pending = true;
+    const write = () => {
+      state.pending = false;
+      const f = state.frac;
+      const value = JSON.stringify({
+        x: Number(f.x.toFixed(6)),
+        y: Number(f.y.toFixed(6)),
+        w: Number(f.w.toFixed(6)),
+        h: Number(f.h.toFixed(6)),
+      });
+      if (cropWidget.value !== value) cropWidget.value = value;
+      if (outputSizeWidget) {
+        const manual = state.manual ? `${state.manual.w},${state.manual.h}` : '';
+        if (outputSizeWidget.value !== manual) outputSizeWidget.value = manual;
+      }
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(write);
+    else write();
+  }
+
+  // ── ВИДЫ (виджеты, которые только показывают состояние) ─────────────────
+  function syncViews() {
+    if (!state.img) {
+      writeWidget(centerXWidget, 0);
+      writeWidget(centerYWidget, 0);
+      writeWidget(frameWWidget, 0);
+      writeWidget(frameHWidget, 0);
+      return;
+    }
+    const offset = frameCenterOffset(state.frac, state.img.w, state.img.h);
+    writeWidget(centerXWidget, Math.round(offset.x));
+    writeWidget(centerYWidget, Math.round(offset.y));
+    const out = resultSize();
+    writeWidget(frameWWidget, out.w);
+    writeWidget(frameHWidget, out.h);
+    // В ручном режиме мегапиксели показывают эквивалент результата.
+    if (state.manual) writeWidget(mpWidget, (out.w * out.h) / MEGAPIXEL_UNIT);
+  }
+
+  // ── ПРИМЕНЕНИЕ СОСТОЯНИЯ (единственная точка) ───────────────────────────
+  function commit() {
+    persistState();
+    syncViews();
+    refreshLayoutSize();
+    layout();
+  }
+
+  // ── ОПЕРАЦИИ (у каждой — явная политика) ─────────────────────────────────
+
+  /** Мышь: кадр едет или меняет размер. Если задан ручной размер результата, его
+   * пропорции следуют за кадром (ширина сохраняется) — иначе результат
+   * растянулся бы. */
+  function moveOrResizeCrop(frac) {
+    if (state.manual) {
+      const ratio = fracRatio(frac, state.img.w, state.img.h);
+      state.manual = { w: state.manual.w, h: state.manual.w / ratio };
+    }
+    state.frac = clampFrac(frac);
+    commit();
+  }
+
+  /** Пресет пропорций: ручной результат сбрасывается (размер снова от MP). */
+  function applyRatioPreset(value) {
+    state.manual = null;
+    state.frac = frameWithRatio(state.frac, state.img.w, state.img.h, value);
+    commit();
+  }
+
+  /** Ручной размер результата: пропорции кадра следуют за результатом
+   * (площадь и центр сохраняются), иначе кадр растянулся бы. */
+  function setResultSize(width, height) {
+    const manual = snapSize({ w: width, h: height }, multiplicity());
+    state.manual = manual;
+    state.frac = frameWithRatio(state.frac, state.img.w, state.img.h, manual.w / manual.h);
+    commit();
+  }
+
+  /** Правка мегапикселей: ручной результат сбрасывается, размер снова от MP. */
+  function setMegaPixels() {
+    state.manual = null;
+    commit();
+  }
+
+  /** Координаты центра кадра (px, смещение от центра изображения). */
+  function setFrameCenter(offsetX, offsetY) {
+    if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return;
+    state.frac = moveFrameToOffset(state.frac, state.img.w, state.img.h, offsetX, offsetY);
+    commit();
+  }
+
+  /** «Сбросить»: кадр по изображению, свободные пропорции, ручной результат
+   * сброшен. */
+  function resetCrop() {
+    state.frac = { x: 0, y: 0, w: 1, h: 1 };
+    state.manual = null;
+    state.ratioLock = null;
+    programmatic(lockWidget, false);
+    programmatic(aspectWidget, 'free');
+    commit();
+  }
+
+  /** Ручной размер, расходящийся с пропорциями кадра, устарел — отбрасываем:
+   * иначе MP и пресет пропорций молча игнорировались бы, а кадр растягивался бы. */
+  function dropStaleManual() {
+    if (!state.manual || !state.img) return false;
+    if (ratiosMatch(state.frac, state.manual, state.img.w, state.img.h)) return false;
+    state.manual = null;
+    return true;
+  }
+
+  /** Загрузка состояния из виджетов (открытие воркфлоу). */
+  function loadStateFromWidgets() {
+    if (cropWidget) state.frac = parseRectFrac(cropWidget.value);
+    state.manual = parseManualSize(outputSizeWidget?.value);
+    dropStaleManual();
+  }
+
+  // ── ОТРИСОВКА (чистая: только читает состояние) ─────────────────────────
   function union() {
-    const r = pxRect();
+    const r = cropPx();
     if (!state.img) return null;
     const x0 = Math.min(0, r.x);
     const y0 = Math.min(0, r.y);
@@ -776,36 +862,8 @@ function createEditor(node, widget) {
     node.graph?.setDirtyCanvas?.(true);
   }
 
-  function persist() {
-    if (!cropWidget) return;
-    if (state.pending) return;
-    state.pending = true;
-    const write = () => {
-      state.pending = false;
-      const f = state.frac;
-      const value = JSON.stringify({
-        x: Number(f.x.toFixed(6)),
-        y: Number(f.y.toFixed(6)),
-        w: Number(f.w.toFixed(6)),
-        h: Number(f.h.toFixed(6)),
-      });
-      if (cropWidget.value !== value) cropWidget.value = value;
-    };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(write);
-    else write();
-  }
-
-  function setFrac(frac, { persist: save = true } = {}) {
-    state.frac = clampFrac(frac);
-    if (save) persist();
-    refreshLayoutSize();
-    layout();
-    syncCoords();
-    syncSize();
-  }
-
-  function layoutBadge(r) {
-    const out = currentOutput();
+  function layoutBadge() {
+    const out = resultSize();
     const megapixels = (out.w * out.h) / 1e6;
     badge.textContent = `${out.w} × ${out.h} px\n${megapixels.toFixed(2)} MP`;
     badge.style.display = '';
@@ -821,9 +879,6 @@ function createEditor(node, widget) {
 
   function layout() {
     syncHelpAnchor();
-    // Сверка ДО отрисовки плашки: иначе плашка показала бы устаревший
-    // ручной размер, а поля — уже новый.
-    reconcileManual();
     const width = stage.clientWidth;
     const height = stage.clientHeight;
     if (!width || !height) return;
@@ -843,7 +898,7 @@ function createEditor(node, widget) {
     badge.style.display = '';
     for (const el of Object.values(handles)) el.style.display = '';
 
-    const r = pxRect();
+    const r = cropPx();
     const u = union();
     const usableW = Math.max(20, width - 2 * PAD);
     const usableH = Math.max(20, height - 2 * PAD);
@@ -885,7 +940,7 @@ function createEditor(node, widget) {
     };
     for (const [name, [x, y]] of Object.entries(spots)) setRect(handles[name], x, y, HANDLE, HANDLE);
 
-    layoutBadge(r);
+    layoutBadge();
     const badgeW = badge.offsetWidth || 130;
     const badgeH = badge.offsetHeight || 32;
     let bx = fx;
@@ -897,17 +952,7 @@ function createEditor(node, widget) {
     badge.style.top = `${by}px`;
   }
 
-  function applyAspect() {
-    const r = ratio();
-    if (!r || !locked() || !state.img) return;
-    setFrac(frameWithRatio(state.frac, state.img.w, state.img.h, r));
-  }
-
-  function readRect() {
-    if (!cropWidget) return;
-    state.frac = parseRectFrac(cropWidget.value);
-  }
-
+  // ── ПРЕВЬЮ ИСТОЧНИКА ────────────────────────────────────────────────────
   // LoadImage после выбора/загрузки файла пишет app.nodeOutputs[key]. Событие
   // приходит по-разному: legacy зовёт source.onWidgetChanged, Nodes 2.0 зовёт
   // только widget.callback (createWidgetUpdateHandler). Слушаем оба канала,
@@ -1013,23 +1058,25 @@ function createEditor(node, widget) {
       if (!w || !h) return;
       const changed = !state.img || state.img.w !== w || state.img.h !== h;
       state.img = { w, h };
-      if (changed) {
-        if (locked() && ratio()) applyAspect();
-        else if (locked()) {
-          state.ratioLock = currentPxRatio();
-          persist();
-          refreshLayoutSize();
-          layout();
-          syncCoords();
-        }
-        else {
-          // Keep the relative frame; normalize the transport value once.
-          persist();
-          refreshLayoutSize();
-          layout();
-        }
-      } else {
+      if (!changed) {
         layout();
+        return;
+      }
+      // Новая картинка: кадр остаётся в долях, а пропорции приводятся к
+      // действующей политике — к ручному размеру, к пресету или к текущим.
+      if (dropStaleManual()) {
+        commit();
+      } else if (state.manual) {
+        state.frac = frameWithRatio(state.frac, w, h, state.manual.w / state.manual.h);
+        commit();
+      } else if (locked() && ratio()) {
+        state.frac = frameWithRatio(state.frac, w, h, ratio());
+        commit();
+      } else if (locked()) {
+        state.ratioLock = cropRatio();
+        commit();
+      } else {
+        commit();
       }
     };
     image.onerror = () => {
@@ -1046,6 +1093,7 @@ function createEditor(node, widget) {
     image.src = force ? `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}` : url;
   }
 
+  // ── DRAG ─────────────────────────────────────────────────────────────────
   function localFromEvent(event, view) {
     const rect = view?.rect || stage.getBoundingClientRect();
     const zoom = view?.zoom || rect.width / Math.max(1, stage.clientWidth);
@@ -1070,7 +1118,7 @@ function createEditor(node, widget) {
 
   function hitTest(point) {
     if (!state.img) return null;
-    const r = pxRect();
+    const r = cropPx();
     const x0 = state.offX + r.x * state.scale;
     const y0 = state.offY + r.y * state.scale;
     const x1 = x0 + r.w * state.scale;
@@ -1123,8 +1171,8 @@ function createEditor(node, widget) {
     state.drag = {
       kind,
       start: sourceFromLocal(local, view),
-      rect: pxRect(),
-      ratio: currentPxRatio(),
+      rect: cropPx(),
+      ratio: cropRatio(),
       view,
     };
     try {
@@ -1150,7 +1198,7 @@ function createEditor(node, widget) {
     if (state.drag.kind === 'move') {
       const start = state.drag.rect;
       const delta = event.shiftKey ? axisDelta(dx, dy) : { dx, dy };
-      setFrac({
+      moveOrResizeCrop({
         x: (start.x + delta.dx) / state.img.w,
         y: (start.y + delta.dy) / state.img.h,
         w: start.w / state.img.w,
@@ -1162,17 +1210,17 @@ function createEditor(node, widget) {
     // В свободном режиме Shift сохраняет текущие пропорции рамки, не включая
     // «Зафиксировано»: ratio берётся из состояния на момент начала drag.
     const dragRatio = locked() ? effectiveRatio() : event.shiftKey ? state.drag.ratio : null;
-    const next = resizeFrame(
-      state.drag.rect,
-      dx,
-      dy,
-      state.drag.kind,
-      dragRatio,
-      state.img.w,
-      state.img.h,
+    moveOrResizeCrop(
+      resizeFrame(
+        state.drag.rect,
+        dx,
+        dy,
+        state.drag.kind,
+        dragRatio,
+        state.img.w,
+        state.img.h,
+      ),
     );
-    if (!locked()) adaptManualToFrame(next);
-    setFrac(next);
   }
 
   function endDrag(event) {
@@ -1194,34 +1242,28 @@ function createEditor(node, widget) {
     else endDrag(event);
   });
 
+  // ── КНОПКИ ──────────────────────────────────────────────────────────────
   // «Вписать» — равномерный масштаб текущей рамки до касания ближайших
   // границ изображения (и вверх, и вниз) + центр. Пропорции и режим не меняются.
   buttonEls.fit.addEventListener('click', (event) => {
     event.stopPropagation();
     if (!state.img) return;
-    setFrac(fitFrameFrac(state.frac));
+    moveOrResizeCrop(fitFrameFrac(state.frac));
   });
   // «По центру» — только перенос центра рамки в центр изображения: размер,
   // пропорции и режим сохраняются, выход за границы разрешён.
   buttonEls.center.addEventListener('click', (event) => {
     event.stopPropagation();
     if (!state.img) return;
-    setFrac(centerFrameFrac(state.frac));
+    moveOrResizeCrop(centerFrameFrac(state.frac));
   });
   // «Сбросить» — рамка ровно по изображению + свободные пропорции.
   buttonEls.reset.addEventListener('click', (event) => {
     event.stopPropagation();
-    state.frac = { x: 0, y: 0, w: 1, h: 1 };
-    state.ratioLock = null;
-    programmatic(lockWidget, false);
-    programmatic(aspectWidget, 'free');
-    clearManual();
-    persist();
-    refreshLayoutSize();
-    layout();
-    syncCoords();
+    resetCrop();
   });
 
+  // ── ПОДСКАЗКА ───────────────────────────────────────────────────────────
   function renderHelp() {
     const t = labels();
     helpBox.textContent = '';
@@ -1250,62 +1292,7 @@ function createEditor(node, widget) {
   });
   helpBox.addEventListener('pointerdown', (event) => event.stopPropagation());
 
-  function widgetIdFor(widget) {
-    const graphId = node.graph?.id ?? app?.rootGraph?.id;
-    if (!graphId || !widget?.name) return null;
-    return `${graphId}:${encodeURIComponent(String(node.id))}:${encodeURIComponent(widget.name)}`;
-  }
-
-  // Nodes 2.0 рисует виджеты из widgetValueStore, legacy — из widget.value.
-  // Пишем в оба места, иначе программная смена (кнопка «Сбросить») видна
-  // только в одном из режимов.
-  function widgetStore() {
-    const candidates = [
-      app?.widgetValueStore,
-      app?.extensionManager?.widgetValueStore,
-      window?.comfyAPI?.widgetValueStore,
-      window?.comfyAPI?.stores?.widgetValueStore,
-    ];
-    for (const store of candidates) {
-      if (store && typeof store.setValue === 'function') return store;
-    }
-    return null;
-  }
-
-  function setWidgetValue(widget, value) {
-    if (!widget || widget.value === value) return false;
-    widget.value = value;
-    const id = widgetIdFor(widget);
-    try {
-      widgetStore()?.setValue?.(id, value);
-    } catch {
-      /* ignore store mismatch */
-    }
-    try {
-      widget.callback?.(value, app?.canvas, node);
-    } catch {
-      /* ignore callback faults */
-    }
-    node.setDirtyCanvas?.(true, true);
-    node.graph?.setDirtyCanvas?.(true, true);
-    return true;
-  }
-
-  // Запись значения БЕЗ вызова callback'а: для полей координат это обязательно
-  // (иначе каждый кадр drag'а перезапускает ноду).
-  function setWidgetValueQuiet(widget, value) {
-    if (!widget || widget.value === value) return false;
-    widget.value = value;
-    const id = widgetIdFor(widget);
-    try {
-      widgetStore()?.setValue?.(id, value);
-    } catch {
-      /* ignore store mismatch */
-    }
-    node.setDirtyCanvas?.(true, true);
-    return true;
-  }
-
+  // ── ЯЗЫК ────────────────────────────────────────────────────────────────
   // Язык берётся из Comfy.Locale при создании ноды и переприменяется при смене
   // настройки — без перезапуска ComfyUI. Значения combo (протокол) не трогаем.
   function applyLanguage() {
@@ -1333,7 +1320,7 @@ function createEditor(node, widget) {
           off: t.lockOff,
         });
       } catch {
-        /* ignore store mismatch */
+        /* store may be unavailable in this frontend build */
       }
       node.setDirtyCanvas?.(true, true);
     }
@@ -1347,98 +1334,84 @@ function createEditor(node, widget) {
   }
   applyLanguage();
 
-  if (aspectWidget?.callback) {
-    const original = aspectWidget.callback;
-    aspectWidget.callback = (...args) => {
-      const result = original.apply(aspectWidget, args);
-      if (state.suppress) {
-        layout();
-        return result;
-      }
-      if (aspectWidget.value === 'free') {
-        // «Свободные» снимает фиксацию: рамка остаётся как есть.
-        state.ratioLock = null;
-        programmatic(lockWidget, false);
-      } else {
-        // Выбор пресета применяет его и включает «Зафиксировано».
-        state.ratioLock = null;
-        programmatic(lockWidget, true);
-        clearManual();
-        applyAspect();
-      }
-      layout();
-      return result;
-    };
-  }
-  if (lockWidget?.callback) {
-    const original = lockWidget.callback;
-    lockWidget.callback = (...args) => {
-      const result = original.apply(lockWidget, args);
-      if (state.suppress) {
-        layout();
-        return result;
-      }
-      if (lockWidget.value) {
-        // Фиксируем ТЕКУЩИЕ пропорции рамки; пресет из списка имеет приоритет.
-        state.ratioLock = ratio() ? null : currentPxRatio();
-      } else {
-        state.ratioLock = null;
-        programmatic(aspectWidget, 'free');
-      }
-      layout();
-      return result;
-    };
-  }
-
-  // Поля координат — обратная связь: пользователь задал X/Y → рамка едет.
-  for (const widget of [centerXWidget, centerYWidget]) {
-    if (!widget?.callback) continue;
+  // ── ОБРАБОТКА ВИДЖЕТОВ ──────────────────────────────────────────────────
+  // Обёртка callback'а: сначала штатная обработка фронтенда, затем политика
+  // ноды. Программные записи (state.suppress) политику не запускают.
+  function onWidgetChange(widget, handler) {
+    if (!widget?.callback) return;
     const original = widget.callback;
     widget.callback = (...args) => {
       const result = original.apply(widget, args);
       if (state.suppress) return result;
-      if (widget === centerXWidget) applyCoords(args[0], centerYWidget?.value);
-      else applyCoords(centerXWidget?.value, args[0]);
+      handler(args[0]);
       return result;
     };
   }
 
-  // Поля размера рамки: правка → размер, пропорции и плашка пересчитываются
-  // тем же путём, что и при перетаскивании мышью.
-  for (const [widget, axis] of [[frameWWidget, 'w'], [frameHWidget, 'h']]) {
-    if (!widget?.callback) continue;
-    const original = widget.callback;
-    widget.callback = (...args) => {
-      const result = original.apply(widget, args);
-      if (state.suppress) return result;
-      applySize(axis, args[0] ?? widget.value);
-      return result;
-    };
-  }
+  // Пресет пропорций: применяем пропорции и включаем «Зафиксировано».
+  onWidgetChange(aspectWidget, () => {
+    if (aspectWidget.value === 'free') {
+      // «Свободные» снимает фиксацию: рамка остаётся как есть.
+      state.ratioLock = null;
+      programmatic(lockWidget, false);
+      commit();
+      return;
+    }
+    state.ratioLock = null;
+    programmatic(lockWidget, true);
+    applyRatioPreset(RATIO_VALUES[aspectWidget.value]);
+  });
+
+  // «Зафиксировано»: фиксируем ТЕКУЩИЕ пропорции кадра; пресет из списка имеет
+  // приоритет.
+  onWidgetChange(lockWidget, () => {
+    if (lockWidget.value) {
+      state.ratioLock = ratio() ? null : cropRatio();
+    } else {
+      state.ratioLock = null;
+      programmatic(aspectWidget, 'free');
+    }
+    commit();
+  });
+
+  // Поля координат: пользователь задал X/Y → рамка едет.
+  onWidgetChange(centerXWidget, (value) => {
+    setFrameCenter(Number(value), Number(centerYWidget?.value));
+  });
+  onWidgetChange(centerYWidget, (value) => {
+    setFrameCenter(Number(centerXWidget?.value), Number(value));
+  });
+
+  // Поля размера результата: та же операция, что перетаскивание мышью, — меняется
+  // одна сторона, вторая сохраняется.
+  onWidgetChange(frameWWidget, (value) => {
+    const width = Number(value);
+    if (!Number.isFinite(width) || width <= 0) {
+      syncViews();
+      return;
+    }
+    setResultSize(width, resultSize().h);
+  });
+  onWidgetChange(frameHWidget, (value) => {
+    const height = Number(value);
+    if (!Number.isFinite(height) || height <= 0) {
+      syncViews();
+      return;
+    }
+    setResultSize(resultSize().w, height);
+  });
 
   // Правка мегапикселей возвращает обычный режим (размер по MP).
-  if (mpWidget?.callback) {
-    const original = mpWidget.callback;
-    mpWidget.callback = (...args) => {
-      const result = original.apply(mpWidget, args);
-      if (!state.suppress) clearManual();
-      layout();
-      syncSize();
-      return result;
-    };
-  }
+  onWidgetChange(mpWidget, () => {
+    setMegaPixels();
+  });
 
   // Изменение «косметики» и параметров выхода перерисовывает сцену сразу:
   // без этого затемнение и плашка отстают до следующего resize/drag.
   for (const widget of [dimWidget, fillWidget, multWidget]) {
-    if (!widget?.callback) continue;
-    const original = widget.callback;
-    widget.callback = (...args) => {
-      const result = original.apply(widget, args);
-      layout();
-      syncSize();
-      return result;
-    };
+    onWidgetChange(widget, () => {
+      commit();
+    });
   }
 
   const resize = node.onResize;
@@ -1467,26 +1440,21 @@ function createEditor(node, widget) {
   const configure = node.onConfigure;
   node.onConfigure = function () {
     const result = configure?.apply(this, arguments);
-    readRect();
-    readManual();
+    loadStateFromWidgets();
     requestAnimationFrame(() => {
       watchSource();
       loadSource({ force: true });
-      if (locked() && ratio() && state.img) applyAspect();
-      else if (locked() && state.img) state.ratioLock = currentPxRatio();
-      layout();
-      syncCoords();
-      syncSize();
+      commit();
     });
     return result;
   };
 
-  readRect();
+  loadStateFromWidgets();
   refreshLayoutSize();
   requestAnimationFrame(() => {
     watchSource();
     loadSource({ force: true });
-    layout();
+    commit();
   });
 
   const onExecuted = () => requestAnimationFrame(() => loadSource());
@@ -1507,26 +1475,17 @@ function createEditor(node, widget) {
   };
 
   function refresh() {
-    readRect();
+    loadStateFromWidgets();
     loadSource();
-    layout();
+    commit();
   }
 
   return {
     widget: root,
     refresh,
     layout,
-    setFrac,
+    commit,
     state,
-    centerX: centerXWidget,
-    centerY: centerYWidget,
-    frameW: frameWWidget,
-    frameH: frameHWidget,
-    outputSize: outputSizeWidget,
-    readManual,
-    helpBox,
-    helpBtn,
-    syncCoords,
   };
 }
 

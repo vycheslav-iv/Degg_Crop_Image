@@ -107,17 +107,23 @@ async def main() -> int:
 
             out = await evaluate(
                 "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
-                " e.setFrac(%s);"
+                " const cr = (n.widgets || []).find((x) => x.name === 'crop_rect');"
+                " if (cr) cr.value = %s;"
+                " e.refresh();"
                 " const s = e.state;"
+                " const fw = (n.widgets || []).find((x) => x.name === 'frame_w');"
+                " const fh = (n.widgets || []).find((x) => x.name === 'frame_h');"
                 " return { badge: e.widget.querySelector('.degg-crop__badge').textContent,"
-                "  w: e.frameW.value, h: e.frameH.value,"
-                "  img: s.img, frac: s.frac }; })()" % json.dumps(CROP_RECT)
+                "  w: fw ? fw.value : null, h: fh ? fh.value : null,"
+                "  img: s.img, frac: s.frac }; })()" % json.dumps(json.dumps(CROP_RECT))
             )
             await asyncio.sleep(0.5)
             out2 = await evaluate(
                 "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const fw = (n.widgets || []).find((x) => x.name === 'frame_w');"
+                " const fh = (n.widgets || []).find((x) => x.name === 'frame_h');"
                 " return { badge: e.widget.querySelector('.degg-crop__badge').textContent,"
-                "  w: e.frameW.value, h: e.frameH.value, img: e.state.img }; })()"
+                "  w: fw ? fw.value : null, h: fh ? fh.value : null, img: e.state.img }; })()"
             )
             print("источник:", out2.get("img"))
             print("плашка :", (out2.get("badge") or "").replace("\n", " | "))

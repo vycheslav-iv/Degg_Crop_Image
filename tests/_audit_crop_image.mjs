@@ -143,37 +143,37 @@ check(
   /cropWidget\.value\s*=\s*value/.test(JS) && /cropWidget\s*=\s*widgetByName\(node,\s*'crop_rect'\)/.test(JS),
 );
 check("JS: подписка на executed снимается в onRemoved", /onRemoved[\s\S]{0,300}?removeEventListener/.test(JS));
-check("JS: persist через requestAnimationFrame", /persist[\s\S]{0,400}?requestAnimationFrame/.test(JS));
+check("JS: сериализация через requestAnimationFrame", /function persistState\(\)[\s\S]{0,1200}?requestAnimationFrame/.test(JS));
 check("JS: сброс кадра кнопкой есть", /reset/i.test(JS) && /Сброс|Reset/.test(JS));
 check("JS: кнопки вписывания (fit/center)", /fit/i.test(JS) && /center/i.test(JS));
 check("JS: «Вписать» через fitFrameFrac", /buttonEls\.fit[\s\S]{0,200}?fitFrameFrac\(state\.frac\)/.test(JS));
 check("JS: «По центру» через centerFrameFrac", /buttonEls\.center[\s\S]{0,200}?centerFrameFrac\(state\.frac\)/.test(JS));
 check(
-  "JS: «Сбросить» = рамка 0,0,1,1 + свободные + замок off",
-  /buttonEls\.reset[\s\S]{0,400}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}[\s\S]{0,240}?programmatic\(lockWidget, false\)[\s\S]{0,200}?programmatic\(aspectWidget, 'free'\)/.test(JS),
+  "JS: «Сбросить» = рамка 0,0,1,1 + свободные + замок off + ручной размер сброшен",
+  /function resetCrop\(\)[\s\S]{0,400}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}[\s\S]{0,220}?state\.manual = null[\s\S]{0,220}?programmatic\(lockWidget, false\)[\s\S]{0,220}?programmatic\(aspectWidget, 'free'\)/.test(JS),
 );
 check(
-  "JS: «Сбросить» не применяет пропорцию (нет applyAspect в обработчике)",
-  !/buttonEls\.reset[\s\S]{0,500}?applyAspect/.test(JS),
+  "JS: «Сбросить» не применяет пропорцию (нет applyRatioPreset в resetCrop)",
+  !/function resetCrop\(\)[\s\S]{0,700}?applyRatioPreset/.test(JS),
 );
-const lockBlock = (JS.split("if (lockWidget?.callback)")[1] || "").split("// Изменение «косметики»")[0];
+const lockBlock = (JS.split("onWidgetChange(lockWidget")[1] || "").split("onWidgetChange(centerXWidget")[0];
 check(
-  "JS: замок фиксирует ТЕКУЩИЕ пропорции рамки (currentPxRatio, без applyAspect)",
-  /currentPxRatio\(\)/.test(lockBlock) && !/applyAspect/.test(lockBlock),
+  "JS: замок фиксирует ТЕКУЩИЕ пропорции рамки (cropRatio, без applyRatioPreset)",
+  /cropRatio\(\)/.test(lockBlock) && !/applyRatioPreset/.test(lockBlock),
 );
 check(
   "JS: выключение замка переводит «Пропорции» в свободные",
   /programmatic\(aspectWidget, 'free'\)/.test(lockBlock),
 );
-const aspectBlock = (JS.split("if (aspectWidget?.callback)")[1] || "").split("if (lockWidget?.callback)")[0];
+const aspectBlock = (JS.split("onWidgetChange(aspectWidget")[1] || "").split("onWidgetChange(lockWidget")[0];
 check(
   "JS: выбор пресета пропорций включает замок и применяет его",
-  /programmatic\(lockWidget, true\)[\s\S]{0,80}?applyAspect\(\)/.test(aspectBlock),
+  /programmatic\(lockWidget, true\)[\s\S]{0,140}?applyRatioPreset\(/.test(aspectBlock),
 );
 check(
   "JS: «Свободные» снимает замок без изменения рамки",
-  /aspectWidget\.value === 'free'[\s\S]{0,160}?programmatic\(lockWidget, false\)/.test(aspectBlock)
-    && !/aspectWidget\.value === 'free'[\s\S]{0,160}?applyAspect/.test(aspectBlock),
+  /aspectWidget\.value === 'free'[\s\S]{0,220}?programmatic\(lockWidget, false\)/.test(aspectBlock)
+    && !/aspectWidget\.value === 'free'[\s\S]{0,220}?applyRatioPreset/.test(aspectBlock),
 );
 check(
   "JS: свободный режим + Shift сохраняет текущие пропорции при ресайзе",
@@ -186,7 +186,7 @@ check(
 check(
   "JS: координаты центра рамки — пересчёт в пикселях через нативные виджеты",
   /frameCenterOffset\(state\.frac, state\.img\.w, state\.img\.h\)/.test(JS)
-    && /moveFrameToOffset\(state\.frac, state\.img\.w, state\.img\.h, ox, oy\)/.test(JS),
+    && /moveFrameToOffset\(state\.frac, state\.img\.w, state\.img\.h, offsetX, offsetY\)/.test(JS),
 );
 check(
   "JS: подсказка «?» собирается из LABELS (ru/en) и перерисовывается при смене языка",
@@ -310,16 +310,24 @@ check(
     /widgetByName\(node,\s*'center_y'\)/.test(JS),
 );
 check(
-  "JS: запись координат БЕЗ callback'а (тихая)",
-  /function setWidgetValueQuiet\([\s\S]{0,700}?widget\.value\s*=\s*value/.test(JS) &&
-    /setWidgetValueQuiet\(centerXWidget,\s*Math\.round\(offset\.x\)\)/.test(JS) &&
-    /setWidgetValueQuiet\(centerYWidget,\s*Math\.round\(offset\.y\)\)/.test(JS),
+  "JS: единственная точка записи в виджет (writeWidget), тихая по умолчанию",
+  /function writeWidget\(widget, value, \{ call = false \} = \{\}\)/.test(JS) &&
+    /writeWidget\(centerXWidget, Math\.round\(offset\.x\)\)/.test(JS) &&
+    /writeWidget\(centerYWidget, Math\.round\(offset\.y\)\)/.test(JS) &&
+    !/function setWidgetValueQuiet/.test(JS) &&
+    !/function setWidgetValue\(/.test(JS),
 );
 check(
-  "JS: правка координат двигает рамку (applyCoords → moveFrameToOffset)",
-  /function applyCoords\([\s\S]{0,400}?moveFrameToOffset\(/.test(JS) &&
-    /widget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,400}?if \(widget === centerXWidget\) applyCoords\(/.test(JS) &&
-    /widget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,400}?else applyCoords\(/.test(JS),
+  "JS: программная запись (programmatic) вызывает callback под защитой suppress",
+  /function programmatic\(widget, value\)[\s\S]{0,300}?state\.suppress \+= 1/.test(JS) &&
+    /state\.suppress -= 1/.test(JS) &&
+    /writeWidget\(widget, value, \{ call: true \}\)/.test(JS),
+);
+check(
+  "JS: правка координат двигает рамку (setFrameCenter → moveFrameToOffset)",
+  /function setFrameCenter\(offsetX, offsetY\)[\s\S]{0,400}?moveFrameToOffset\(/.test(JS) &&
+    /onWidgetChange\(centerXWidget[\s\S]{0,200}?setFrameCenter\(/.test(JS) &&
+    /onWidgetChange\(centerYWidget[\s\S]{0,200}?setFrameCenter\(/.test(JS),
 );
 check(
   "JS: кнопка «?» живёт в превью (внутри stage), а подсказка — в корне",
@@ -335,41 +343,41 @@ check(
 );
 check(
   "JS: итоговый размер результата (ручной или по мегапикселям)",
-  /export function outputSizeFor\(/.test(JS) &&
-    /export function snapSize\(/.test(JS) &&
-    /function currentOutput\(\)[\s\S]{0,300}?outputSizeFor\(/.test(JS),
+  /function resultSize\(\)[\s\S]{0,400}?snapSize\(state\.manual/.test(JS) &&
+    /function resultSize\(\)[\s\S]{0,400}?computeOutputSize\(cropPx\(\)\.w, cropPx\(\)\.h/.test(JS),
 );
 check(
   "JS: плашка показывает ИТОГОВЫЙ размер (а не размер кадра)",
-  /function layoutBadge\(r\)[\s\S]{0,200}?const out = currentOutput\(\)/.test(JS),
+  /function layoutBadge\(\)[\s\S]{0,200}?const out = resultSize\(\)/.test(JS),
 );
 check(
   "JS: размер пишется в нативные виджеты тихо (frame_w/frame_h)",
   /widgetByName\(node,\s*'frame_w'\)/.test(JS) &&
     /widgetByName\(node,\s*'frame_h'\)/.test(JS) &&
-    /setWidgetValueQuiet\(frameWWidget, out\.w\)/.test(JS) &&
-    /setWidgetValueQuiet\(frameHWidget, out\.h\)/.test(JS),
+    /writeWidget\(frameWWidget, out\.w\)/.test(JS) &&
+    /writeWidget\(frameHWidget, out\.h\)/.test(JS),
 );
 check(
   "JS: правка размера задаёт итоговый размер и подгоняет пропорции кадра",
-  /function applySize\([\s\S]{0,900}?snapSize\(/.test(JS) &&
-    /function applySize\([\s\S]{0,900}?frameWithRatio\(/.test(JS) &&
-    /widget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,600}?applySize\(axis,/.test(JS),
+  /function setResultSize\(width, height\)[\s\S]{0,600}?snapSize\(/.test(JS) &&
+    /function setResultSize\(width, height\)[\s\S]{0,900}?frameWithRatio\(/.test(JS) &&
+    /onWidgetChange\(frameWWidget/.test(JS) &&
+    /onWidgetChange\(frameHWidget/.test(JS),
 );
 check(
   "JS: ручной размер хранится в скрытом output_size и переживает перезагрузку",
   /widgetByName\(node,\s*'output_size'\)/.test(JS) &&
-    /function writeManual\(\)[\s\S]{0,400}?outputSizeWidget/.test(JS) &&
-    /function readManual\(\)/.test(JS) &&
-    /readManual\(\);/.test(JS),
+    /function persistState\(\)[\s\S]{0,900}?outputSizeWidget/.test(JS) &&
+    /parseManualSize\(outputSizeWidget\?\.value\)/.test(JS),
 );
 check(
   "JS: правка мегапикселей возвращает режим «по мегапикселям»",
-  /mpWidget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,300}?clearManual\(\)/.test(JS),
+  /function setMegaPixels\(\)[\s\S]{0,200}?state\.manual = null/.test(JS) &&
+    /onWidgetChange\(mpWidget[\s\S]{0,200}?setMegaPixels\(\)/.test(JS),
 );
 check(
   "JS: в ручном режиме мегапиксели показывают эквивалент результата",
-  /function syncMpToManual\(\)[\s\S]{0,300}?1024 \* 1024/.test(JS),
+  /function syncViews\(\)[\s\S]{0,900}?writeWidget\(mpWidget, \(out\.w \* out\.h\) \/ MEGAPIXEL_UNIT\)/.test(JS),
 );
 check(
   "Python: ручной размер результата учитывается при расчёте",
@@ -380,18 +388,23 @@ check(
 
 check(
   "JS: ручной размер сверяется с пропорциями кадра (инвариант)",
-  /function reconcileManual\(\)[\s\S]{0,800}?clearManual\(\)/.test(JS) &&
-    /function syncSize\(\)[\s\S]{0,400}?reconcileManual\(\)/.test(JS),
+  /function dropStaleManual\(\)[\s\S]{0,600}?state\.manual = null/.test(JS) &&
+    /ratiosMatch\(state\.frac, state\.manual, state\.img\.w, state\.img\.h\)/.test(JS),
 );
 check(
-  "JS: свободный drag подстраивает ручной размер ДО setFrac (иначе инвариант сбросит режим)",
-  /if \(!locked\(\)\) adaptManualToFrame\(next\);[\s\S]{0,80}?setFrac\(next\)/.test(JS),
+  "JS: свободный drag подстраивает ручной размер (пропорции результата следуют за кадром)",
+  /function moveOrResizeCrop\(frac\)[\s\S]{0,600}?fracRatio\(frac, state\.img\.w, state\.img\.h\)/.test(JS) &&
+    /state\.manual = \{ w: state\.manual\.w, h: state\.manual\.w \/ ratio \}/.test(JS),
+);
+check(
+  "JS: сверка устаревшего ручного размера — до применения состояния, а не в отрисовке",
+  !/function layout\(\)[\s\S]{0,400}?dropStaleManual\(\)/.test(JS),
 );
 
 check(
   "JS: итоговый размер считается по ПИКСЕЛЯМ кадра (как в Python), а не по долям",
-  /function currentOutput\(\)[\s\S]{0,300}?const r = pxRect\(\)/.test(JS) &&
-    !/function currentOutput\(\)[\s\S]{0,300}?const r = state\.frac/.test(JS),
+  /function resultSize\(\)[\s\S]{0,400}?computeOutputSize\(cropPx\(\)\.w, cropPx\(\)\.h/.test(JS) &&
+    !/computeOutputSize\(state\.frac\.w, state\.frac\.h/.test(JS),
 );
 
 // ── Итог ───────────────────────────────────────────────────────────────────
