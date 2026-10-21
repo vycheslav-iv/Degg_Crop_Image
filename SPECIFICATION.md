@@ -129,10 +129,11 @@ step = max(1, int(multiplicity))
 | центр кадра | `center_x` / `center_y` | интерфейс | только интерфейс (следствие геометрии) |
 | итоговый размер | `frame_w` / `frame_h` | интерфейс | только интерфейс (следствие `crop_rect` + MP) |
 | параметры результата | `resample`, `fill`, `dim_outside` | пользователь | `resample`/`fill` — сервер, `dim_outside` — только вид |
+| сетка золотого сечения | `golden_ratio` | пользователь | только вид (сервер не читает) |
 
-⛔ `aspect_ratio`, `lock_ratio`, `center_x`, `center_y`, `frame_w`, `frame_h`
-сервер **не использует** — это видимые элементы управления редактора, а
-машинное состояние лежит в `crop_rect` и `output_size`. Так сделано намеренно:
+⛔ `aspect_ratio`, `lock_ratio`, `center_x`, `center_y`, `frame_w`, `frame_h`,
+`golden_ratio` сервер **не использует** — это видимые элементы управления
+редактора, а машинное состояние лежит в `crop_rect` и `output_size`. Так сделано намеренно:
 размер результата (MP) и размер обреза (px источника) — разные величины, и
 «размер обреза» из одних `center_x/center_y/frame_w/frame_h` вывести нельзя
 (это размер ВЫХОДА, а не высота кадра в источнике).
@@ -380,13 +381,13 @@ step = max(1, int(multiplicity))
 
 ```bash
 cd Degg_Crop_Image
-python tests/_test_crop_image.py     # логика без torch          → PASS: 95
+python tests/_test_crop_image.py     # логика без torch          → PASS: 106
 node   tests/_smoke_crop_image.mjs   # JS + паритет с Python     → ok: 82
-node   tests/_audit_crop_image.mjs   # контракт Python ↔ JS ↔ locales → ok: 178
+node   tests/_audit_crop_image.mjs   # контракт Python ↔ JS ↔ locales → ok: 173
 python _process/check.py Degg_Crop_Image   # из корня бандла      → ЗЕЛЁНОЕ: провалов 0
 ```
 
-Живая DOM-проба — `ok: 97`; проверка на реальном воркфлоу — `tests/
+Живая DOM-проба — `ok: 106`; проверка на реальном воркфлоу — `tests/
 _check_real_workflow.py` (OK: симулирует ОТКРЫТИЕ воркфлоу — виджеты →
 `onConfigure` → восстановление связей; ожидание считает Python).
 
@@ -425,7 +426,7 @@ legacy (`onWidgetChanged`) и Nodes 2.0 (`widget.callback` без `onWidgetChang
 (`EXPECTED`) — все сверяются со списком из §2, включая `center_x`/`center_y`
 сразу под `lock_ratio`.
 
-Живая DOM-проба (`_probe_live_dom_crop_image.py`, `ok: 84`) покрывает новую
+Живая DOM-проба (`_probe_live_dom_crop_image.py`, `ok: 106`) покрывает новую
 семантику: фиксация ТЕКУЩИХ пропорций (рамка 1.6 + ресайз края → соотношение
 сохраняется), выбор пресета (4:3 + замок включён), «Свободные» (замок выключен),
 поля координат (показывают смещение центра, ввод двигает рамку), Shift-ресайз
