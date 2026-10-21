@@ -382,6 +382,27 @@ async def main() -> int:
 
             badge = after.get("badge") or ""
             check("плашка видна", bool(after.get("badgeVisible")))
+            # Подключение картинки = сброс под неё: результат = размер картинки.
+            check(
+                "подключение картинки: результат = размер картинки (768 × 768)",
+                "768 × 768 px" in badge,
+                badge,
+            )
+            reset_frac = after.get("frac") or {}
+            check(
+                "подключение картинки: рамка по всему изображению",
+                abs(reset_frac.get("x", 1)) < 1e-6 and abs(reset_frac.get("y", 1)) < 1e-6
+                and abs(reset_frac.get("w", 0) - 1) < 1e-6 and abs(reset_frac.get("h", 0) - 1) < 1e-6,
+                reset_frac,
+            )
+            # Дальше — режим «по мегапикселям»: ставим 2.0 явно.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; const m = n.widgets.find((w) => w.name === 'megapixels');"
+                " m.value = 2.0; m.callback && m.callback(2.0, app.canvas, n); return true; })()"
+            )
+            await asyncio.sleep(0.35)
+            after = await cdp.eval(STATE_JS)
+            badge = after.get("badge") or ""
             check(f"плашка содержит {expected_w} × {expected_h} px", f"{expected_w} × {expected_h} px" in badge, badge)
             exp_mp = expected_w * expected_h / 1e6
             check(
@@ -558,7 +579,11 @@ async def main() -> int:
                 " lock: n.widgets.find((x) => x.name === 'lock_ratio').value }; })()"
             )
             check("«Сбросить»: пропорции → «Свободные»", reset_widgets.get("aspect") == "free", reset_widgets)
-            check("«Сбросить»: замок выключен", reset_widgets.get("lock") is False, reset_widgets)
+            check(
+                "«Сбросить»: фиксация включена на пропорциях изображения",
+                reset_widgets.get("lock") is True and reset_widgets.get("aspect") == "free",
+                reset_widgets,
+            )
             img_box = reset.get("imgBox") or {}
             frame_box = reset.get("frameBox") or {}
             check(
@@ -1319,11 +1344,13 @@ async def main() -> int:
                 fw = await cdp.eval("(() => window.__widget('frame_w').value)()")
                 fh = await cdp.eval("(() => window.__widget('frame_h').value)()")
                 wfrac = wide_src.get("frac") or {}
-                # Ожидаемый размер считает PYTHON — тем же кодом, что и сервер.
+                # Ожидаемый размер считает PYTHON — тем же кодом, что и сервер,
+                # с текущими мегапикселями ноды.
+                mp_now = float(await cdp.eval("(() => window.__widget('megapixels').value)()"))
                 exp_w, exp_h = ci.output_size(
                     wfrac.get("w", 0) * natural[0],
                     wfrac.get("h", 0) * natural[1],
-                    2.0,
+                    mp_now,
                     8,
                 )
                 check(
@@ -1348,6 +1375,114 @@ async def main() -> int:
                     " return true; })()"
                 )
                 await asyncio.sleep(1.2)
+
+            # ── СБРОС К ИЗОБРАЖЕНИЮ ───────────────────────────────────────
+            # 1. Кнопка «Сбросить»: рамка по всему изображению, значения — его.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " window.__setFrame({ x: 0.2, y: 0.2, w: 0.4, h: 0.4 });"
+                " const b = n.__deggCrop.widget.querySelectorAll('.degg-crop__btn')[2];"
+                " b.click(); return true; })()"
+            )
+            await asyncio.sleep(0.35)
+            after_reset = await cdp.eval(STATE_JS)
+            rfrac = after_reset.get("frac") or {}
+            rnat = after_reset.get("natural") or [1, 1]
+            rw = await cdp.eval("(() => window.__widget('frame_w').value)()")
+            rh = await cdp.eval("(() => window.__widget('frame_h').value)()")
+            check(
+                "«Сбросить»: рамка по всему изображению",
+                abs(rfrac.get("x", 1)) < 1e-6 and abs(rfrac.get("y", 1)) < 1e-6
+                and abs(rfrac.get("w", 0) - 1) < 1e-6 and abs(rfrac.get("h", 0) - 1) < 1e-6,
+                rfrac,
+            )
+            check(
+                "«Сбросить»: размер результата = размер изображения",
+                int(rw) == rnat[0] and int(rh) == rnat[1],
+                {"result": [rw, rh], "image": rnat},
+            )
+            check(
+                "«Сбросить»: мегапиксели = площадь изображения",
+                abs(
+                    float(await cdp.eval("(() => window.__widget('megapixels').value)()"))
+                    - (rnat[0] * rnat[1]) / (1024 * 1024)
+                )
+                < 0.06,
+                await cdp.eval("(() => window.__widget('megapixels').value)()"),
+            )
+            check(
+                "«Сбросить»: центр рамки = центр изображения",
+                abs(int(await cdp.eval("(() => window.__widget('center_x').value)()"))) <= 1
+                and abs(int(await cdp.eval("(() => window.__widget('center_y').value)()"))) <= 1,
+            )
+
+            # 2. Новая картинка → тот же сброс (другой файл, тот же размер —
+            #    сбрасывает, потому что меняется файл, а не только размер).
+            await cdp.eval(
+                "(() => { const l = window.__probeLoad;"
+                " const w = (l.widgets || []).find((x) => x.name === 'image');"
+                " w.value = '%s';"
+                " if (typeof w.callback === 'function') w.callback(w.value, app.canvas, l);"
+                " return true; })()" % NON_SQUARE
+            )
+            await asyncio.sleep(2.5)
+            after_new_image = await cdp.eval(STATE_JS)
+            nfrac = after_new_image.get("frac") or {}
+            nnat = after_new_image.get("natural") or [1, 1]
+            nw = await cdp.eval("(() => window.__widget('frame_w').value)()")
+            check(
+                "новая картинка: рамка по всему изображению",
+                abs(nfrac.get("x", 1)) < 1e-6 and abs(nfrac.get("y", 1)) < 1e-6
+                and abs(nfrac.get("w", 0) - 1) < 1e-6 and abs(nfrac.get("h", 0) - 1) < 1e-6,
+                nfrac,
+            )
+            check(
+                "новая картинка: значения результата = значения изображения",
+                int(nw) == nnat[0],
+                {"result": nw, "image": nnat},
+            )
+
+            # 3. Восстановление воркфлоу рамку НЕ сбрасывает: кадр приходит
+            #    из crop_rect, и новая картинка не должна его затирать.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " window.__setFrame({ x: 0.2, y: 0.2, w: 0.4, h: 0.4 });"
+                " n.__deggCrop.refresh();"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.6)
+            restored = await cdp.eval(STATE_JS)
+            sfrac = restored.get("frac") or {}
+            check(
+                "восстановление воркфлоу: рамка сохраняется (сброса нет)",
+                abs(sfrac.get("w", 0) - 0.4) < 1e-6 and abs(sfrac.get("h", 0) - 0.4) < 1e-6,
+                sfrac,
+            )
+
+            # Настоящий сценарий открытия воркфлою: сначала onConfigure (нода
+            # получает сохранённое состояние), потом восстанавливаются связи.
+            # Рамка из crop_rect обязана уцелеть — сброс тут только вредит.
+            await cdp.eval(
+                "(() => { const g = app.graph; const load = window.__probeLoad;"
+                " const n2 = LiteGraph.createNode('DeggCropImage');"
+                " g.add(n2); n2.pos = [900, 300];"
+                " const cr = (n2.widgets || []).find((w) => w.name === 'crop_rect');"
+                " if (cr) cr.value = '{\"x\":0.2,\"y\":0.2,\"w\":0.3,\"h\":0.3}';"
+                " try { n2.onConfigure(); } catch (e) { /* оригинал может требовать info */ }"
+                " load.connect(0, n2, 0);"
+                " window.__probeCrop2 = n2;"
+                " return true; })()"
+            )
+            await asyncio.sleep(3.0)
+            cfrac = await cdp.eval(
+                "(() => window.__probeCrop2 && window.__probeCrop2.__deggCrop"
+                " ? window.__probeCrop2.__deggCrop.state.frac : null)()"
+            ) or {}
+            check(
+                "открытие воркфлою: рамка из crop_rect уцелела (сброса нет)",
+                abs(cfrac.get("w", 0) - 0.3) < 1e-6 and abs(cfrac.get("h", 0) - 0.3) < 1e-6,
+                cfrac,
+            )
 
             errors = await cdp.eval("window.__probeErrors")
             real = [e for e in (errors or []) if "example.png" not in e and "favicon" not in e]

@@ -1,6 +1,9 @@
-"""Проверка на РЕАЛЬНОМ воркфлоу «Test Crop»: реальная картинка 2720×1536 и
+"""Проверка на РЕАЛЬНОМ воркфлое «Test Crop»: реальная картинка 2720×1536 и
 сохранённый crop_rect. Ожидание: размер результата считается по пикселям кадра
-(16:9 → 1928×1088), а не по долям (1448×1448).
+(16:9 → 1928×1088 при 2 МП), а не по долям (1448×1448).
+
+Сценарий — как открытие воркфлоу: сначала нода получает сохранённое состояние
+(виджеты + onConfigure), потом восстанавливаются связи.
 
 Запуск: python tests/_check_real_workflow.py
 """
@@ -8,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 import time
@@ -21,16 +25,76 @@ except Exception:
 
 import websockets  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import crop_image as ci  # тот же расчёт, что и на сервере
+
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 IMAGE = "image_flux3_klein_distilled_t2i_00023_.png"
 CROP_RECT = {"x": 0.181794, "y": 0.183037, "w": 0.636412, "h": 0.633926}
+MULTIPLICITY = 8
+MEGAPIXELS = 2.0
+
+SETUP_JS = """
+(() => {
+  const g = app.graph;
+  const load = LiteGraph.createNode('LoadImage');
+  g.add(load);
+  const w = load.widgets.find((x) => x.name === 'image');
+  w.value = '__IMAGE__';
+  load.imgs = [{
+    src: window.comfyAPI.api.api.apiURL(
+      '/view?filename=' + encodeURIComponent('__IMAGE__') + '&type=input'),
+  }];
+  const crop = LiteGraph.createNode('DeggCropImage');
+  g.add(crop);
+  crop.setSize([460, 460]);
+  window.__probeLoad = load;
+  window.__probeCrop = crop;
+  // Сохранённое состояние ноды: рамка, пропорции, мегапиксели, кратность.
+  const set = (name, value) => {
+    const w2 = (crop.widgets || []).find((x) => x.name === name);
+    if (w2) w2.value = value;
+  };
+  set('crop_rect', '__RECT__');
+  set('aspect_ratio', '16:9');
+  set('megapixels', __MP__);
+  set('multiplicity', __MULT__);
+  try { crop.onConfigure(); } catch (e) { /* onConfigure может требовать info */ }
+  // Связи восстанавливаются ПОСЛЕ onConfigure — как в воркфлое.
+  load.connect(0, crop, 0);
+  return true;
+})()
+""".replace("__IMAGE__", IMAGE).replace("__RECT__", json.dumps(CROP_RECT)).replace(
+    "__MP__", str(MEGAPIXELS)
+).replace("__MULT__", str(MULTIPLICITY))
+
+STATE_JS = """
+(() => {
+  const n = window.__probeCrop;
+  const e = n && n.__deggCrop;
+  if (!e) return { mounted: false };
+  const q = (sel) => e.widget.querySelector(sel);
+  const img = q('.degg-crop__img');
+  const badge = q('.degg-crop__badge');
+  const fw = (n.widgets || []).find((x) => x.name === 'frame_w');
+  const fh = (n.widgets || []).find((x) => x.name === 'frame_h');
+  return {
+    mounted: true,
+    badge: badge ? badge.textContent : '',
+    w: fw ? fw.value : null,
+    h: fh ? fh.value : null,
+    img: e.state.img,
+    frac: e.state.frac,
+  };
+})()
+"""
 
 
 async def main() -> int:
     import subprocess
     import tempfile
 
-    port = 9345
+    port = 9346
     profile = tempfile.mkdtemp(prefix="degg-real-")
     chrome = subprocess.Popen(
         [
@@ -48,7 +112,10 @@ async def main() -> int:
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=2) as r:
                     pages = json.load(r)
-                page = next((p for p in pages if p.get("type") == "page" and p.get("webSocketDebuggerUrl")), None)
+                page = next(
+                    (p for p in pages if p.get("type") == "page" and p.get("webSocketDebuggerUrl")),
+                    None,
+                )
                 if page:
                     break
             except Exception:
@@ -73,7 +140,10 @@ async def main() -> int:
                         return msg.get("result", {})
 
             async def evaluate(expr):
-                res = await call("Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": True})
+                res = await call(
+                    "Runtime.evaluate",
+                    {"expression": expr, "returnByValue": True, "awaitPromise": True},
+                )
                 if "exceptionDetails" in res:
                     raise RuntimeError(str(res["exceptionDetails"])[:300])
                 return res.get("result", {}).get("value")
@@ -90,62 +160,46 @@ async def main() -> int:
                 await asyncio.sleep(1)
             await asyncio.sleep(2)
 
-            info = await evaluate(
-                "(() => { const g = app.graph;"
-                " const load = LiteGraph.createNode('LoadImage');"
-                " g.add(load);"
-                " const w = load.widgets.find((x) => x.name === 'image');"
-                " w.value = '%s';"
-                " load.imgs = [{ src: window.comfyAPI.api.api.apiURL('/view?filename=' + encodeURIComponent('%s') + '&type=input') }];"
-                " const crop = LiteGraph.createNode('DeggCropImage');"
-                " g.add(crop); crop.setSize([460, 460]);"
-                " load.connect(0, crop, 0);"
-                " window.__probeLoad = load; window.__probeCrop = crop;"
-                " return true; })()" % (IMAGE, IMAGE)
-            )
-            await asyncio.sleep(3.0)
+            await evaluate(SETUP_JS)
+            await asyncio.sleep(3.5)
 
-            # Проверяем, что картинка реально неквадратная: иначе смысла в
-            # этой проверке нет (доли и пиксели совпадают — ошибка невидима).
-            natural = await evaluate(
-                "(() => { const i = window.__probeCrop.__deggCrop.widget"
-                ".querySelector('.degg-crop__img');"
-                " return i ? [i.naturalWidth, i.naturalHeight] : [0, 0]; })()"
-            ) or [0, 0]
+            state = await evaluate(STATE_JS) or {}
+            raw_img = state.get("img")
+            if isinstance(raw_img, dict):
+                natural = [raw_img.get("w", 0), raw_img.get("h", 0)]
+            elif isinstance(raw_img, (list, tuple)):
+                natural = list(raw_img)
+            else:
+                natural = [0, 0]
             if not natural[0] or natural[0] == natural[1]:
                 print(
-                    "ПРОПУСК: картинка '%s' недоступна или квадратная — "
-                    "проверка «размер по пикселям» на реальном воркфлоу "
-                    "не выполнялась" % IMAGE
+                    "ПРОПУСК: картинка '%s' недоступна или квадратная — проверка "
+                    "«размер по пикселям» на реальном воркфлоу не выполнялась" % IMAGE
                 )
                 return 0
 
-            out = await evaluate(
-                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
-                " const cr = (n.widgets || []).find((x) => x.name === 'crop_rect');"
-                " if (cr) cr.value = %s;"
-                " e.refresh();"
-                " const s = e.state;"
-                " const fw = (n.widgets || []).find((x) => x.name === 'frame_w');"
-                " const fh = (n.widgets || []).find((x) => x.name === 'frame_h');"
-                " return { badge: e.widget.querySelector('.degg-crop__badge').textContent,"
-                "  w: fw ? fw.value : null, h: fh ? fh.value : null,"
-                "  img: s.img, frac: s.frac }; })()" % json.dumps(json.dumps(CROP_RECT))
+            frac = state.get("frac") or {}
+            # Ожидаемый размер считает PYTHON — тем же кодом, что и сервер:
+            # пропорции кадра В ПИКСЕЛЯХ × мегапиксели.
+            exp_w, exp_h = ci.output_size(
+                frac.get("w", 0) * natural[0],
+                frac.get("h", 0) * natural[1],
+                MEGAPIXELS,
+                MULTIPLICITY,
             )
-            await asyncio.sleep(0.5)
-            out2 = await evaluate(
-                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
-                " const fw = (n.widgets || []).find((x) => x.name === 'frame_w');"
-                " const fh = (n.widgets || []).find((x) => x.name === 'frame_h');"
-                " return { badge: e.widget.querySelector('.degg-crop__badge').textContent,"
-                "  w: fw ? fw.value : null, h: fh ? fh.value : null, img: e.state.img }; })()"
+            print("источник:", natural)
+            print("рамка   :", frac)
+            print("плашка  :", (state.get("badge") or "").replace("\n", " | "))
+            print("поля    :", state.get("w"), "x", state.get("h"))
+            ok = (
+                state.get("w") == exp_w
+                and state.get("h") == exp_h
+                and f"{exp_w} × {exp_h} px" in (state.get("badge") or "")
             )
-            print("источник:", out2.get("img"))
-            print("плашка :", (out2.get("badge") or "").replace("\n", " | "))
-            print("поля   :", out2.get("w"), "x", out2.get("h"))
-            ok = (out2.get("w") == 1928 and out2.get("h") == 1088
-                  and "1928 × 1088 px" in (out2.get("badge") or ""))
-            print("ИТОГ:", "OK — размер по пикселям кадра" if ok else "СБОЙ: размер неверный")
+            print(
+                "ИТОГ: %s (ожидалось %d × %d)"
+                % ("OK — размер по пикселям кадра" if ok else "СБОЙ: размер неверный", exp_w, exp_h)
+            )
             return 0 if ok else 1
     finally:
         chrome.terminate()

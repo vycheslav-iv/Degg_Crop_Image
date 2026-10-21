@@ -160,27 +160,9 @@ async def main() -> int:
                     break
                 await asyncio.sleep(0.6)
             await asyncio.sleep(1.5)
-            # Сценарий пользователя: ручной размер 1000 × 1000, затем выбор
-            # 16:9 и 2 МП — устаревший ручной размер не должен перебивать их.
-            await evaluate(
-                "(() => { const crop = window.__probeCrop;"
-                " const w = crop.widgets.find((x) => x.name === 'frame_w');"
-                " const h = crop.widgets.find((x) => x.name === 'frame_h');"
-                " if (!w || !h) return false;"
-                " w.value = 1000; w.callback && w.callback(1000, app.canvas, crop);"
-                " h.value = 1000; h.callback && h.callback(1000, app.canvas, crop);"
-                " return true; })()"
-            )
-            await asyncio.sleep(0.6)
-            await evaluate(
-                "(() => { const crop = window.__probeCrop;"
-                " const a = crop.widgets.find((x) => x.name === 'aspect_ratio');"
-                " a.value = '16:9'; a.callback && a.callback(a.value);"
-                " const m = crop.widgets.find((x) => x.name === 'megapixels');"
-                " m.value = 2.0; m.callback && m.callback(2.0, app.canvas, crop);"
-                " return true; })()"
-            )
-            await asyncio.sleep(0.8)
+            # Сценарий по умолчанию: картинка подключена → нода сбросилась под
+            # неё (рамка по всему изображению, результат = размер картинки).
+            await asyncio.sleep(2.0)
             await evaluate("app.canvas.setDirty(true, true)")
             await asyncio.sleep(0.8)
 

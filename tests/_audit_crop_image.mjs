@@ -149,12 +149,22 @@ check("JS: кнопки вписывания (fit/center)", /fit/i.test(JS) && /
 check("JS: «Вписать» через fitFrameFrac", /buttonEls\.fit[\s\S]{0,200}?fitFrameFrac\(state\.frac\)/.test(JS));
 check("JS: «По центру» через centerFrameFrac", /buttonEls\.center[\s\S]{0,200}?centerFrameFrac\(state\.frac\)/.test(JS));
 check(
-  "JS: «Сбросить» = рамка 0,0,1,1 + свободные + замок off + ручной размер сброшен",
-  /function resetCrop\(\)[\s\S]{0,400}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}[\s\S]{0,220}?state\.manual = null[\s\S]{0,220}?programmatic\(lockWidget, false\)[\s\S]{0,220}?programmatic\(aspectWidget, 'free'\)/.test(JS),
+  "JS: сброс к изображению = рамка 0,0,1,1 + пропорции и размер изображения",
+  /function resetToImage\(\)[\s\S]{0,500}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}/.test(JS) &&
+    /function resetToImage\(\)[\s\S]{0,700}?state\.ratioLock = state\.img \? state\.img\.w \/ state\.img\.h/.test(JS) &&
+    /function resetToImage\(\)[\s\S]{0,700}?snapSize\(\{ w: state\.img\.w, h: state\.img\.h \}/.test(JS),
 );
 check(
-  "JS: «Сбросить» не применяет пропорцию (нет applyRatioPreset в resetCrop)",
-  !/function resetCrop\(\)[\s\S]{0,700}?applyRatioPreset/.test(JS),
+  "JS: «Сбросить» и новая картинка ведут в одну операцию (resetToImage)",
+  /buttonEls\.reset[\s\S]{0,300}?resetToImage\(\)/.test(JS) &&
+    /image\.onload[\s\S]{0,900}?isNewImage && !restoring[\s\S]{0,200}?resetToImage\(\)/.test(JS),
+);
+check(
+  "JS: восстановление воркфлоу рамку не сбрасывает (флаг restoring)",
+  /restoring:\s*false, \/\/ нода восстанавливается/.test(JS) &&
+    /node\.onConfigure = function \(\)[\s\S]{0,200}?state\.restoring = true/.test(JS) &&
+    /function refresh\(\)[\s\S]{0,200}?state\.restoring = true/.test(JS) &&
+    /isNewImage && !restoring/.test(JS),
 );
 const lockBlock = (JS.split("onWidgetChange(lockWidget")[1] || "").split("onWidgetChange(centerXWidget")[0];
 check(

@@ -585,6 +585,9 @@ function createEditor(node, widget) {
     manual: null,
     img: null, // размер источника в пикселях
     key: '', // ключ превью (чтобы не грузить одно и то же)
+    imageKey: null, // ключ уже показанной картинки (для «новая картинка»)
+    restoring: false, // нода восстанавливается из воркфлоу: рамку не трогаем
+
     scale: 1, // параметры отрисовки сцены
     offX: 0,
     offY: 0,
@@ -812,14 +815,27 @@ function createEditor(node, widget) {
     commit();
   }
 
-  /** «Сбросить»: кадр по изображению, свободные пропорции, ручной результат
-   * сброшен. */
-  function resetCrop() {
+  /** Сброс к подключённому изображению: рамка по всему кадру, а значения ноды
+   * принимают значения изображения:
+   *  - рамка = всё изображение (0,0,1,1);
+   *  - пропорции — пропорции изображения, фиксация на них (пресет не подходит:
+   *    у произвольного изображения своего пресета нет);
+   *  - мегапиксели — площадь изображения, значит результат = размер изображения;
+   *  - ручной размер сброшен: он задавал бы другой результат.
+   *
+   * Используется и кнопкой «Сбросить», и при подключении/смене картинки —
+   * одна операция на оба случая. */
+  function resetToImage() {
     state.frac = { x: 0, y: 0, w: 1, h: 1 };
-    state.manual = null;
-    state.ratioLock = null;
-    programmatic(lockWidget, false);
+    // Размер результата = размер изображения. Задаём его ТОЧНО (ручной размер),
+    // а не через мегапиксели: их шаг 0.1 дал бы «2728 × 1536» вместо
+    // «2720 × 1536». Мегапиксели покажут эквивалент (syncViews).
+    state.manual = state.img
+      ? snapSize({ w: state.img.w, h: state.img.h }, multiplicity())
+      : null;
+    state.ratioLock = state.img ? state.img.w / state.img.h : null;
     programmatic(aspectWidget, 'free');
+    programmatic(lockWidget, true);
     commit();
   }
 
@@ -1039,7 +1055,11 @@ function createEditor(node, widget) {
   function loadSource({ retry = true, force = false } = {}) {
     const { key, url } = previewFor(node);
     const nextKey = url ? key : '';
-    if (!force && nextKey === state.key) return;
+    if (!force && nextKey === state.key) {
+      // Картинка уже показана — грузить нечего, значит и восстановление завершено.
+      state.restoring = false;
+      return;
+    }
     state.key = nextKey;
 
     if (!url) {
@@ -1057,7 +1077,21 @@ function createEditor(node, widget) {
       const h = image.naturalHeight || 0;
       if (!w || !h) return;
       const changed = !state.img || state.img.w !== w || state.img.h !== h;
+      // Новая картинка (другой файл) — тот же сброс, что и у кнопки «Сбросить».
+      // При восстановлении воркфлоу (restore) рамку трогать нельзя: она пришла
+      // из crop_rect.
+      const isNewImage = state.imageKey !== state.key;
+      state.imageKey = state.key;
       state.img = { w, h };
+      // Восстановление воркфлоу: рамка пришла из crop_rect — её не трогаем.
+      // Связи в воркфлоу восстанавливаются ПОСЛЕ onConfigure, поэтому флаг живёт
+      // в состоянии, а не в аргументе загрузки.
+      const restoring = state.restoring;
+      state.restoring = false;
+      if (isNewImage && !restoring) {
+        resetToImage();
+        return;
+      }
       if (!changed) {
         layout();
         return;
@@ -1257,10 +1291,10 @@ function createEditor(node, widget) {
     if (!state.img) return;
     moveOrResizeCrop(centerFrameFrac(state.frac));
   });
-  // «Сбросить» — рамка ровно по изображению + свободные пропорции.
+  // «Сбросить» — рамка и значения ровно как у подключённого изображения.
   buttonEls.reset.addEventListener('click', (event) => {
     event.stopPropagation();
-    resetCrop();
+    resetToImage();
   });
 
   // ── ПОДСКАЗКА ───────────────────────────────────────────────────────────
@@ -1440,6 +1474,7 @@ function createEditor(node, widget) {
   const configure = node.onConfigure;
   node.onConfigure = function () {
     const result = configure?.apply(this, arguments);
+    state.restoring = true;
     loadStateFromWidgets();
     requestAnimationFrame(() => {
       watchSource();
@@ -1475,6 +1510,7 @@ function createEditor(node, widget) {
   };
 
   function refresh() {
+    state.restoring = true;
     loadStateFromWidgets();
     loadSource();
     commit();
