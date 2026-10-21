@@ -645,12 +645,28 @@ function createEditor(node, widget) {
     );
   }
 
+  // Инвариант: пропорции кадра и пропорции ручного результата должны
+  // совпадать, иначе кадр растянулся бы (а MP и пресет пропорций врали бы).
+  // Разошлись — значит ручной размер устарел (например, остался от прошлого
+  // воркфлоу): возвращаем обычный режим «по мегапикселям».
+  function reconcileManual() {
+    if (!state.manual || !state.img) return;
+    const r = pxRect();
+    if (!(r.w > 0) || !(r.h > 0)) return;
+    const frameRatio = r.w / r.h;
+    const manualRatio = state.manual.w / state.manual.h;
+    if (!Number.isFinite(frameRatio) || !Number.isFinite(manualRatio)) return;
+    if (Math.abs(frameRatio - manualRatio) / manualRatio < 0.005) return;
+    clearManual();
+  }
+
   function syncSize() {
     if (!state.img) {
       setWidgetValueQuiet(frameWWidget, 0);
       setWidgetValueQuiet(frameHWidget, 0);
       return;
     }
+    reconcileManual();
     const out = currentOutput();
     setWidgetValueQuiet(frameWWidget, out.w);
     setWidgetValueQuiet(frameHWidget, out.h);
@@ -692,15 +708,18 @@ function createEditor(node, widget) {
   }
 
   // Свободный drag меняет пропорции рамки — ручной размер под них подстраивается
-  // (ширина сохраняется, высота следует), без рывков.
-  function adaptManualToFrame() {
+  // (ширина сохраняется, высота следует), без рывков. Считаем по НОВОМУ кадру
+  // (до setFrac), иначе инвариант сбросил бы ручной режим.
+  function adaptManualToFrame(nextFrac) {
     if (!state.manual || !state.img) return;
-    const r = pxRect();
-    if (!(r.w > 0) || !(r.h > 0)) return;
-    const ratio = r.w / r.h;
-    const h = state.manual.w / ratio;
-    if (Math.abs(h - state.manual.h) < 0.5) return;
-    state.manual = { w: state.manual.w, h };
+    const r = nextFrac || state.frac;
+    const w = Number(r.w) * state.img.w;
+    const h = Number(r.h) * state.img.h;
+    if (!(w > 0) || !(h > 0)) return;
+    const ratio = w / h;
+    const nextH = state.manual.w / ratio;
+    if (Math.abs(nextH - state.manual.h) < 0.5) return;
+    state.manual = { w: state.manual.w, h: nextH };
     writeManual();
     syncMpToManual();
   }
@@ -799,6 +818,9 @@ function createEditor(node, widget) {
 
   function layout() {
     syncHelpAnchor();
+    // Сверка ДО отрисовки плашки: иначе плашка показала бы устаревший
+    // ручной размер, а поля — уже новый.
+    reconcileManual();
     const width = stage.clientWidth;
     const height = stage.clientHeight;
     if (!width || !height) return;
@@ -1137,18 +1159,17 @@ function createEditor(node, widget) {
     // В свободном режиме Shift сохраняет текущие пропорции рамки, не включая
     // «Зафиксировано»: ratio берётся из состояния на момент начала drag.
     const dragRatio = locked() ? effectiveRatio() : event.shiftKey ? state.drag.ratio : null;
-    setFrac(
-      resizeFrame(
-        state.drag.rect,
-        dx,
-        dy,
-        state.drag.kind,
-        dragRatio,
-        state.img.w,
-        state.img.h,
-      ),
+    const next = resizeFrame(
+      state.drag.rect,
+      dx,
+      dy,
+      state.drag.kind,
+      dragRatio,
+      state.img.w,
+      state.img.h,
     );
-    if (!locked()) adaptManualToFrame();
+    if (!locked()) adaptManualToFrame(next);
+    setFrac(next);
   }
 
   function endDrag(event) {
@@ -1452,6 +1473,7 @@ function createEditor(node, widget) {
       else if (locked() && state.img) state.ratioLock = currentPxRatio();
       layout();
       syncCoords();
+      syncSize();
     });
     return result;
   };
@@ -1498,6 +1520,7 @@ function createEditor(node, widget) {
     frameW: frameWWidget,
     frameH: frameHWidget,
     outputSize: outputSizeWidget,
+    readManual,
     helpBox,
     helpBtn,
     syncCoords,

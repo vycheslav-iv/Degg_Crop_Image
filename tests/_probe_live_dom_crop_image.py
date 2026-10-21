@@ -814,6 +814,39 @@ async def main() -> int:
                 {"w": pw, "h": ph, "badge": after_preset.get("badge")},
             )
 
+            # РЕГРЕССИЯ (случай пользователя): ручной размер остался от прошлого
+            # воркфлоу (1:1), а выбраны 16:9 и 2 МП. Пропорции кадра и ручного
+            # результата разошлись → ручной режим сбрасывается, иначе MP и пресет
+            # молча игнорируются, а кадр растягивается.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " const m = n.widgets.find((x) => x.name === 'megapixels');"
+                " m.value = 2.0; m.callback && m.callback(2.0, app.canvas, n);"
+                " a.value = '16:9'; a.callback && a.callback(a.value);"
+                " e.outputSize.value = '1448,1448';"
+                " e.readManual();"
+                " e.setFrac(e.state.frac);"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.35)
+            stale = await cdp.eval(STATE_JS)
+            sw2 = await cdp.eval("(() => window.__probeCrop.__deggCrop.frameW.value)()")
+            sh2 = await cdp.eval("(() => window.__probeCrop.__deggCrop.frameH.value)()")
+            check(
+                "устаревший ручной размер не перебивает пресет и мегапиксели",
+                int(sw2) == 1928 and int(sh2) == 1088
+                and "1928 × 1088 px" in (stale.get("badge") or ""),
+                {"w": sw2, "h": sh2, "badge": stale.get("badge")},
+            )
+            sfrac = stale.get("frac") or {}
+            snat = stale.get("natural") or [1, 1]
+            check(
+                "после сброса ручного режима пропорции кадра = пропорциям результата (16:9)",
+                abs((sfrac.get("w", 0) * snat[0]) / max(1e-6, sfrac.get("h", 0) * snat[1]) - 16 / 9) < 0.01,
+                sfrac,
+            )
+
             # Возвращаем свободный режим и 2 МП — дальше идут проверки Shift
             # и контрольный случай «16:9, 2 МП → 1928 × 1088».
             await cdp.eval(

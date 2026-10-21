@@ -378,6 +378,16 @@ check(
     /parse_output_size\(output_size\)/.test(PY),
 );
 
+check(
+  "JS: ручной размер сверяется с пропорциями кадра (инвариант)",
+  /function reconcileManual\(\)[\s\S]{0,800}?clearManual\(\)/.test(JS) &&
+    /function syncSize\(\)[\s\S]{0,400}?reconcileManual\(\)/.test(JS),
+);
+check(
+  "JS: свободный drag подстраивает ручной размер ДО setFrac (иначе инвариант сбросит режим)",
+  /if \(!locked\(\)\) adaptManualToFrame\(next\);[\s\S]{0,80}?setFrac\(next\)/.test(JS),
+);
+
 // ── Итог ───────────────────────────────────────────────────────────────────
 console.log("");
 console.log(`ok: ${oks.length}   FAIL: ${problems.length}`);
