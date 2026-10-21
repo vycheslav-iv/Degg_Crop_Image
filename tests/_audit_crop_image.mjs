@@ -388,6 +388,12 @@ check(
   /if \(!locked\(\)\) adaptManualToFrame\(next\);[\s\S]{0,80}?setFrac\(next\)/.test(JS),
 );
 
+check(
+  "JS: итоговый размер считается по ПИКСЕЛЯМ кадра (как в Python), а не по долям",
+  /function currentOutput\(\)[\s\S]{0,300}?const r = pxRect\(\)/.test(JS) &&
+    !/function currentOutput\(\)[\s\S]{0,300}?const r = state\.frac/.test(JS),
+);
+
 // ── Итог ───────────────────────────────────────────────────────────────────
 console.log("");
 console.log(`ok: ${oks.length}   FAIL: ${problems.length}`);
