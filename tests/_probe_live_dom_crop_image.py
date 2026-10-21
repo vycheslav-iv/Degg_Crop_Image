@@ -383,8 +383,10 @@ async def main() -> int:
             badge = after.get("badge") or ""
             check("плашка видна", bool(after.get("badgeVisible")))
             check(
-                "плашка в одну строку (размер и МП через отступ)",
-                "\n" not in (after.get("badge") or "") and "  " in (after.get("badge") or ""),
+                "плашка в одну строку (размер и МП через отступ в 2 пробела)",
+                "\n" not in (after.get("badge") or "")
+                and "px  " in (after.get("badge") or "")
+                and " MP" in (after.get("badge") or ""),
                 after.get("badge"),
             )
             # Подключение картинки = сброс под неё: результат = размер картинки.
