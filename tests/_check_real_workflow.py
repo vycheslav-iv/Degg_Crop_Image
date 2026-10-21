@@ -105,6 +105,21 @@ async def main() -> int:
             )
             await asyncio.sleep(3.0)
 
+            # Проверяем, что картинка реально неквадратная: иначе смысла в
+            # этой проверке нет (доли и пиксели совпадают — ошибка невидима).
+            natural = await evaluate(
+                "(() => { const i = window.__probeCrop.__deggCrop.widget"
+                ".querySelector('.degg-crop__img');"
+                " return i ? [i.naturalWidth, i.naturalHeight] : [0, 0]; })()"
+            ) or [0, 0]
+            if not natural[0] or natural[0] == natural[1]:
+                print(
+                    "ПРОПУСК: картинка '%s' недоступна или квадратная — "
+                    "проверка «размер по пикселям» на реальном воркфлоу "
+                    "не выполнялась" % IMAGE
+                )
+                return 0
+
             out = await evaluate(
                 "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
                 " const cr = (n.widgets || []).find((x) => x.name === 'crop_rect');"
