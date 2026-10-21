@@ -286,8 +286,8 @@ class DeggCropImage:
                     "BOOLEAN",
                     {
                         "default": True,
-                        "label_on": "locked",
-                        "label_off": "free",
+                        "label_on": "Locked",
+                        "label_off": "Free",
                         "tooltip": "Keep the selected aspect ratio while dragging.",
                     },
                 ),

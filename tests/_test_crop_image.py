@@ -454,6 +454,12 @@ check("crop_rect is hidden STRING", types["required"]["crop_rect"][0] == "STRING
 check("mask is optional MASK", types["optional"]["mask"][0] == "MASK")
 check("lanczos is the default resample", types["required"]["resample"][1]["default"] == "lanczos")
 check("lock_ratio default on", types["required"]["lock_ratio"][1]["default"] is True)
+_lock = types["required"]["lock_ratio"][1]
+check("lock_ratio подписи EN-источник", _lock.get("label_on") == "Locked" and _lock.get("label_off") == "Free", _lock)
+check(
+    "Python без русского текста",
+    not any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in str(types)) ,
+)
 check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom_nodes/Image")
 # Порядок виджетов на теле ноды = порядок ключей INPUT_TYPES.
 EXPECTED_WIDGET_ORDER = [

@@ -21,6 +21,7 @@ const PY = path.join(ROOT, "crop_image.py");
 
 const errors = [];
 const oks = [];
+const near1 = (a, b) => Math.abs(a - b) < 1e-9;
 const check = (label, cond, extra = "") => {
   (cond ? oks : errors).push(label);
   if (!cond) console.log(`  FAIL  ${label}${extra ? "  [" + extra + "]" : ""}`);
@@ -74,6 +75,7 @@ const src = fs
 vm.runInContext(src + "\nglobalThis.__RATIOS = RATIO_VALUES;\n", ctx, { filename: JS });
 
 const { pyRound, computeOutputSize, parseRectFrac, clampFrac, resizeFrame } = ctx;
+const { centerFrameFrac, fitFrameFrac } = ctx;
 
 // ── 1. pyRound = Python round() (banker's) ──────────────────────────────────
 check("pyRound(0.5) == 0", pyRound(0.5) === 0, pyRound(0.5));
@@ -211,6 +213,36 @@ try {
 } catch (e) {
   check("setup is idempotent", false, String(e));
 }
+
+// ── 6. Кнопки бара: «По центру» / «Вписать» ────────────────────────────────
+// «По центру» только переносит центр рамки в центр изображения: размер,
+// пропорции и режим не меняются, выход за границы разрешён.
+const C = (r) => (typeof centerFrameFrac === "function" ? centerFrameFrac(r) : { x: NaN, y: NaN, w: NaN, h: NaN });
+const F = (r) => (typeof fitFrameFrac === "function" ? fitFrameFrac(r) : { x: NaN, y: NaN, w: NaN, h: NaN });
+const centered = C({ x: 0.1, y: 0.7, w: 0.4, h: 0.2 });
+check("center: размер сохраняется", near1(centered.w, 0.4) && near1(centered.h, 0.2), JSON.stringify(centered));
+check("center: центр совпал с центром изображения", near1(centered.x, 0.3) && near1(centered.y, 0.4), JSON.stringify(centered));
+
+const big = C({ x: -0.5, y: 0.9, w: 1.6, h: 0.8 });
+check("center: большая рамка остаётся большой", near1(big.w, 1.6) && near1(big.h, 0.8), JSON.stringify(big));
+check("center: большая рамка центрируется с выходом за края", near1(big.x, -0.3) && near1(big.y, 0.1), JSON.stringify(big));
+
+// «Вписать» равномерно масштабирует ТЕКУЩУЮ рамку до касания ближайших
+// границ (и вверх, и вниз) и центрирует; пропорции не меняются.
+const smallFit = F({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 });
+check("fit: маленькая рамка увеличена до границ", near1(smallFit.w, 1) && near1(smallFit.h, 1), JSON.stringify(smallFit));
+check("fit: маленькая рамка по центру", near1(smallFit.x, 0) && near1(smallFit.y, 0), JSON.stringify(smallFit));
+
+const wideFit = F({ x: 0.1, y: 0.4, w: 0.25, h: 0.1 });
+check("fit: пропорции сохранены (0.25×0.1 → 1×0.4)", near1(wideFit.w, 1) && near1(wideFit.h, 0.4), JSON.stringify(wideFit));
+check("fit: касание ближайших границ по центру", near1(wideFit.x, 0) && near1(wideFit.y, 0.3), JSON.stringify(wideFit));
+
+const hugeFit = F({ x: -0.5, y: 0.6, w: 1.5, h: 0.5 });
+check("fit: большая рамка уменьшена до границ", near1(hugeFit.w, 1) && near1(hugeFit.h, 1 / 3), JSON.stringify(hugeFit));
+check("fit: большая рамка отцентрирована", near1(hugeFit.x, 0) && near1(hugeFit.y, 1 / 3), JSON.stringify(hugeFit));
+
+const already = F({ x: 0.25, y: 0, w: 0.5, h: 1 });
+check("fit: рамка ровно по границам не меняется", near1(already.w, 0.5) && near1(already.h, 1) && near1(already.x, 0.25), JSON.stringify(already));
 
 // ── итог ───────────────────────────────────────────────────────────────────
 console.log("");

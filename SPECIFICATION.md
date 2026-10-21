@@ -109,7 +109,20 @@ step = max(1, int(multiplicity))
   локальным через `getBoundingClientRect`;
 - изменения виджетов (`dim_outside`, `fill`, `megapixels`, `multiplicity`)
   прогоняются через обёртку callback → `layout()`, иначе DOM не перерисуется;
-- состояние: `node.__deggCrop = { widget, layout, state, refresh }`;
+- бар редактора:
+  - «Вписать» (`fitFrameFrac`) — равномерный масштаб ТЕКУЩЕЙ рамки
+    `s = min(1/w, 1/h)` вверх и вниз до касания ближайших границ + центр;
+    пропорции и режим не меняются;
+  - «По центру» (`centerFrameFrac`) — только перенос центра рамки в центр
+    изображения; размер и пропорции сохраняются, выход за границы разрешён;
+  - «Сбросить» — рамка `0,0,1,1` + `aspect_ratio='free'` + `lock_ratio=false`;
+    `megapixels`/`multiplicity`/`resample`/`fill`/`dim_outside` НЕ трогаются
+    (это настройки результата, а не рамки); `applyAspect` не вызывается;
+- язык: `Comfy.Locale` (через `app.extensionManager.setting.get`) → `ru` при
+  префиксе `ru`, иначе `en`; словари в `LABELS`; подписи кнопок, combo
+  (`getOptionLabel`) и замка (`options.on/off`) переприменяются на событии
+  legacy-настроек `Comfy.Locale.change` — без перезапуска ComfyUI;
+- состояние: `node.__deggCrop = { widget, layout, state, refresh, setFrac }`;
 - `onConfigure`/`loadedGraphNode` → `refresh()`; сериализация рамки в `crop_rect`.
 
 ---
@@ -143,3 +156,12 @@ legacy (`onWidgetChanged`) и Nodes 2.0 (`widget.callback` без `onWidgetChang
 Порядок виджетов проверяется дважды: `_test_crop_image.py` (ключи `INPUT_TYPES`) и
 `_probe_live_dom_crop_image.py` (`node.widgets` живого узла) — оба сверяются со списком
 из §2. Статический аудит держит тот же список (`EXPECTED`).
+
+Кнопки проверяются на трёх уровнях: `_smoke_crop_image.mjs` — чистая математика
+`centerFrameFrac`/`fitFrameFrac` (размер сохраняется; масштаб равномерный вверх и
+вниз; центр совпадает), `_probe_live_dom_crop_image.py` — реальные клики по кнопкам
+(рамка, `crop_rect`, `aspect_ratio`, `lock_ratio`, геометрия на сцене) и смена языка
+на лету через `dispatchChange('Comfy.Locale', …)`, `_audit_crop_image.mjs` — связка
+«кнопка → функция» и отсутствие старого «Вписать всё». Детекторы проверены
+мутациями: `Math.min → Math.max` даёт 5 FAIL в смоуке, удаление
+`setWidgetValue(lockWidget, false)` — FAIL в аудите.

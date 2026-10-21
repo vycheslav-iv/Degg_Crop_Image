@@ -141,6 +141,25 @@ check("JS: подписка на executed снимается в onRemoved", /onR
 check("JS: persist через requestAnimationFrame", /persist[\s\S]{0,400}?requestAnimationFrame/.test(JS));
 check("JS: сброс кадра кнопкой есть", /reset/i.test(JS) && /Сброс|Reset/.test(JS));
 check("JS: кнопки вписывания (fit/center)", /fit/i.test(JS) && /center/i.test(JS));
+check("JS: «Вписать» через fitFrameFrac", /buttonEls\.fit[\s\S]{0,200}?fitFrameFrac\(state\.frac\)/.test(JS));
+check("JS: «По центру» через centerFrameFrac", /buttonEls\.center[\s\S]{0,200}?centerFrameFrac\(state\.frac\)/.test(JS));
+check(
+  "JS: «Сбросить» = рамка 0,0,1,1 + свободные + замок off",
+  /buttonEls\.reset[\s\S]{0,400}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}[\s\S]{0,200}?setWidgetValue\(lockWidget, false\)[\s\S]{0,200}?setWidgetValue\(aspectWidget, 'free'\)/.test(JS),
+);
+check(
+  "JS: «Сбросить» не применяет пропорцию (нет applyAspect в обработчике)",
+  !/buttonEls\.reset[\s\S]{0,500}?applyAspect/.test(JS),
+);
+check("JS: подписи замка локализуются (options.on/off)", /lockWidget\.options\.on = t\.lockOn/.test(JS) && /lockWidget\.options\.off = t\.lockOff/.test(JS));
+check(
+  "JS: смена языка на лету (Comfy.Locale + removeEventListener)",
+  /addEventListener\?\.\('Comfy\.Locale\.change'/.test(JS) && /removeEventListener\?\.\('Comfy\.Locale\.change'/.test(JS),
+);
+check("JS: RU-кнопки «Вписать/По центру/Сбросить»", /fit: 'Вписать'/.test(JS) && /center: 'По центру'/.test(JS) && /reset: 'Сбросить'/.test(JS));
+check("JS: нет старого «Вписать всё»/Fit all", !/Вписать всё|Fit all|fitAll|fitCenter/.test(JS));
+check("JS: замок RU «Зафиксировано/Свободно»", /lockOn: 'Зафиксировано'/.test(JS) && /lockOff: 'Свободно'/.test(JS));
+check("JS: замок EN «Locked/Free»", /lockOn: 'Locked'/.test(JS) && /lockOff: 'Free'/.test(JS));
 check("JS: превью берёт nodePreviewImages|nodeOutputs", /nodePreviewImages|nodeOutputs/.test(JS));
 check("JS: превью подписано на subgraph-резолв", /isSubgraphNode|resolveSubgraphOutputLink/.test(JS));
 check(

@@ -53,13 +53,15 @@ const LABELS = {
       white: 'Белая',
       gray: 'Серая',
     },
-    fitAll: 'Вписать всё',
-    fitCenter: 'По центру',
+    fit: 'Вписать',
+    center: 'По центру',
     reset: 'Сбросить',
     empty: 'Подключите изображение',
-    fitAllTip: 'Рамка по всему изображению (с учётом пропорций)',
-    fitCenterTip: 'Рамка по центру изображения',
-    resetTip: 'Сбросить рамку к изображению',
+    fitTip: 'Вписать рамку в границы изображения, сохранив пропорции, и поставить по центру',
+    centerTip: 'Поставить рамку по центру изображения, не меняя размер',
+    resetTip: 'Сбросить рамку к целому изображению и свободным пропорциям',
+    lockOn: 'Зафиксировано',
+    lockOff: 'Свободно',
   },
   en: {
     aspect: { free: 'Free' },
@@ -69,13 +71,15 @@ const LABELS = {
       white: 'White',
       gray: 'Gray',
     },
-    fitAll: 'Fit all',
-    fitCenter: 'Center',
+    fit: 'Fit',
+    center: 'Center',
     reset: 'Reset',
     empty: 'Connect an image',
-    fitAllTip: 'Frame the whole image (respecting the ratio)',
-    fitCenterTip: 'Center the frame on the image',
-    resetTip: 'Reset the frame to the image',
+    fitTip: 'Fit the frame to the image bounds, keep proportions, then center',
+    centerTip: 'Center the frame on the image without changing its size',
+    resetTip: 'Reset the frame to the whole image and free proportions',
+    lockOn: 'Locked',
+    lockOff: 'Free',
   },
 };
 
@@ -139,6 +143,28 @@ export function clampFrac(rect) {
     w: Math.min(Math.max(rect.w, 1e-4), max),
     h: Math.min(Math.max(rect.h, 1e-4), max),
   };
+}
+
+/** Center the frame on the image, keeping its size (it may extend outside). */
+export function centerFrameFrac(rect) {
+  const w = Number(rect?.w);
+  const h = Number(rect?.h);
+  if (!(w > 0) || !(h > 0)) return { ...rect };
+  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+}
+
+/**
+ * Uniformly scale the frame to touch the nearest image bounds (up or down),
+ * then center it. Proportions are preserved; the mode is not touched.
+ */
+export function fitFrameFrac(rect) {
+  const w = Number(rect?.w);
+  const h = Number(rect?.h);
+  if (!(w > 0) || !(h > 0)) return { ...rect };
+  const scale = Math.min(1 / w, 1 / h);
+  const nw = w * scale;
+  const nh = h * scale;
+  return { x: (1 - nw) / 2, y: (1 - nh) / 2, w: nw, h: nh };
 }
 
 /** Resize a source-space frame from a drag delta. */
@@ -371,18 +397,15 @@ function createEditor(node, widget) {
     handles[name].dataset.h = name;
   }
 
-  const text = labels();
   const buttons = [
-    ['fitAll', text.fitAll, text.fitAllTip],
-    ['fitCenter', text.fitCenter, text.fitCenterTip],
-    ['reset', text.reset, text.resetTip],
+    ['fit', 'fit'],
+    ['center', 'center'],
+    ['reset', 'reset'],
   ];
   const buttonEls = {};
-  for (const [id, label, tip] of buttons) {
+  for (const [id] of buttons) {
     const button = make('button', 'degg-crop__btn', bar);
     button.type = 'button';
-    button.textContent = label;
-    button.title = tip;
     buttonEls[id] = button;
   }
 
@@ -588,33 +611,6 @@ function createEditor(node, widget) {
       w: w / state.img.w,
       h: h / state.img.h,
     });
-  }
-
-  function fit({ center = false } = {}) {
-    if (!state.img) return;
-    const r = ratio();
-    if (r && locked()) {
-      const imgRatio = state.img.w / state.img.h;
-      let w;
-      let h;
-      if (imgRatio > r) {
-        h = state.img.h;
-        w = h * r;
-      } else {
-        w = state.img.w;
-        h = w / r;
-      }
-      const x = center ? (state.img.w - w) / 2 : 0;
-      const y = center ? (state.img.h - h) / 2 : 0;
-      setFrac({
-        x: x / state.img.w,
-        y: y / state.img.h,
-        w: w / state.img.w,
-        h: h / state.img.h,
-      });
-    } else {
-      setFrac({ x: 0, y: 0, w: 1, h: 1 });
-    }
   }
 
   function readRect() {
@@ -881,24 +877,111 @@ function createEditor(node, widget) {
     else endDrag(event);
   });
 
-  buttonEls.fitAll.addEventListener('click', (event) => {
+  // «Вписать» — равномерный масштаб текущей рамки до касания ближайших
+  // границ изображения (и вверх, и вниз) + центр. Пропорции и режим не меняются.
+  buttonEls.fit.addEventListener('click', (event) => {
     event.stopPropagation();
-    fit({ center: false });
+    if (!state.img) return;
+    setFrac(fitFrameFrac(state.frac));
   });
-  buttonEls.fitCenter.addEventListener('click', (event) => {
+  // «По центру» — только перенос центра рамки в центр изображения: размер,
+  // пропорции и режим сохраняются, выход за границы разрешён.
+  buttonEls.center.addEventListener('click', (event) => {
     event.stopPropagation();
-    fit({ center: true });
+    if (!state.img) return;
+    setFrac(centerFrameFrac(state.frac));
   });
+  // «Сбросить» — рамка ровно по изображению + свободные пропорции.
   buttonEls.reset.addEventListener('click', (event) => {
     event.stopPropagation();
     state.frac = { x: 0, y: 0, w: 1, h: 1 };
+    setWidgetValue(lockWidget, false);
+    setWidgetValue(aspectWidget, 'free');
     persist();
-    if (locked() && ratio()) applyAspect({ keepArea: true });
-    else {
-      refreshLayoutSize();
-      layout();
-    }
+    refreshLayoutSize();
+    layout();
   });
+
+  function widgetIdFor(widget) {
+    const graphId = node.graph?.id ?? app?.rootGraph?.id;
+    if (!graphId || !widget?.name) return null;
+    return `${graphId}:${encodeURIComponent(String(node.id))}:${encodeURIComponent(widget.name)}`;
+  }
+
+  // Nodes 2.0 рисует виджеты из widgetValueStore, legacy — из widget.value.
+  // Пишем в оба места, иначе программная смена (кнопка «Сбросить») видна
+  // только в одном из режимов.
+  function widgetStore() {
+    const candidates = [
+      app?.widgetValueStore,
+      app?.extensionManager?.widgetValueStore,
+      window?.comfyAPI?.widgetValueStore,
+      window?.comfyAPI?.stores?.widgetValueStore,
+    ];
+    for (const store of candidates) {
+      if (store && typeof store.setValue === 'function') return store;
+    }
+    return null;
+  }
+
+  function setWidgetValue(widget, value) {
+    if (!widget || widget.value === value) return false;
+    widget.value = value;
+    const id = widgetIdFor(widget);
+    try {
+      widgetStore()?.setValue?.(id, value);
+    } catch {
+      /* ignore store mismatch */
+    }
+    try {
+      widget.callback?.(value, app?.canvas, node);
+    } catch {
+      /* ignore callback faults */
+    }
+    node.setDirtyCanvas?.(true, true);
+    node.graph?.setDirtyCanvas?.(true, true);
+    return true;
+  }
+
+  // Язык берётся из Comfy.Locale при создании ноды и переприменяется при смене
+  // настройки — без перезапуска ComfyUI. Значения combo (протокол) не трогаем.
+  function applyLanguage() {
+    const t = labels();
+    for (const [id, key] of buttons) {
+      const el = buttonEls[id];
+      if (el) {
+        el.textContent = t[key];
+        el.title = t[`${key}Tip`];
+      }
+    }
+    empty.textContent = t.empty;
+    setOptionLabels(aspectWidget, t.aspect);
+    setOptionLabels(fillWidget, t.fill);
+    if (lockWidget) {
+      lockWidget.options = lockWidget.options || {};
+      lockWidget.options.on = t.lockOn;
+      lockWidget.options.off = t.lockOff;
+      lockWidget.options.label_on = t.lockOn;
+      lockWidget.options.label_off = t.lockOff;
+      try {
+        widgetStore()?.updateOptions?.(widgetIdFor(lockWidget), {
+          on: t.lockOn,
+          off: t.lockOff,
+        });
+      } catch {
+        /* ignore store mismatch */
+      }
+      node.setDirtyCanvas?.(true, true);
+    }
+  }
+
+  const onLocaleChange = () => applyLanguage();
+  try {
+    app?.ui?.settings?.addEventListener?.('Comfy.Locale.change', onLocaleChange);
+  } catch {
+    /* ignore frontend without legacy settings events */
+  }
+  applyLanguage();
 
   if (aspectWidget?.callback) {
     const original = aspectWidget.callback;
@@ -982,6 +1065,11 @@ function createEditor(node, widget) {
   node.onRemoved = function () {
     api?.removeEventListener?.('executed', onExecuted);
     api?.removeEventListener?.('b_preview', onExecuted);
+    try {
+      app?.ui?.settings?.removeEventListener?.('Comfy.Locale.change', onLocaleChange);
+    } catch {
+      /* ignore */
+    }
     detachSource();
     return remove?.apply(this, arguments);
   };
@@ -996,6 +1084,7 @@ function createEditor(node, widget) {
     widget: root,
     refresh,
     layout,
+    setFrac,
     state,
   };
 }

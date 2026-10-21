@@ -450,6 +450,150 @@ async def main() -> int:
                     (got_w, got_h),
                 )
 
+            # ── кнопки бара: «По центру» / «Вписать» / «Сбросить» ────────
+            CLICK = "(() => { const b = window.__probeCrop.__deggCrop.widget"
+            CLICK += ".querySelectorAll('.degg-crop__btn'); return b[%d] ? (b[%d].click(), true) : false; })()"
+
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; n.__deggCrop.setFrac({x:0.1,y:0.7,w:0.4,h:0.2}); return n.__deggCrop.state.frac; })()"
+            )
+            await asyncio.sleep(0.2)
+            check("кнопка «По центру» найдена", bool(await cdp.eval(CLICK % (1, 1))))
+            await asyncio.sleep(0.2)
+            centered = await cdp.eval(STATE_JS)
+            cf = centered.get("frac") or {}
+            check(
+                "«По центру»: размер и пропорции не меняются",
+                abs(cf.get("w", 0) - 0.4) < 1e-6 and abs(cf.get("h", 0) - 0.2) < 1e-6,
+                cf,
+            )
+            check(
+                "«По центру»: центр рамки совпал с центром изображения",
+                abs(cf.get("x", -1) - 0.3) < 1e-6 and abs(cf.get("y", -1) - 0.4) < 1e-6,
+                cf,
+            )
+
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; n.__deggCrop.setFrac({x:0.1,y:0.4,w:0.25,h:0.1}); return n.__deggCrop.state.frac; })()"
+            )
+            await asyncio.sleep(0.2)
+            check("кнопка «Вписать» найдена", bool(await cdp.eval(CLICK % (0, 0))))
+            await asyncio.sleep(0.2)
+            fitted = await cdp.eval(STATE_JS)
+            ff = fitted.get("frac") or {}
+            check(
+                "«Вписать»: маленькая рамка увеличена до границ",
+                abs(ff.get("w", 0) - 1) < 1e-6 and abs(ff.get("h", 0) - 0.4) < 1e-6,
+                ff,
+            )
+            check(
+                "«Вписать»: масштаб равномерный, центр сохранён",
+                abs(ff.get("x", -1)) < 1e-6 and abs(ff.get("y", -1) - 0.3) < 1e-6,
+                ff,
+            )
+
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; n.__deggCrop.setFrac({x:-0.5,y:0.6,w:1.5,h:0.5}); return n.__deggCrop.state.frac; })()"
+            )
+            await asyncio.sleep(0.2)
+            await cdp.eval(CLICK % (0, 0))
+            await asyncio.sleep(0.2)
+            huge = await cdp.eval(STATE_JS)
+            hf = huge.get("frac") or {}
+            check(
+                "«Вписать»: большая рамка уменьшена (и вверх, и вниз)",
+                abs(hf.get("w", 0) - 1) < 1e-6 and abs(hf.get("h", 0) - 1 / 3) < 1e-6,
+                hf,
+            )
+            check(
+                "«Вписать»: большая рамка отцентрирована",
+                abs(hf.get("x", -1)) < 1e-6 and abs(hf.get("y", -1) - 1 / 3) < 1e-6,
+                hf,
+            )
+
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio'); a.value = '16:9'; a.callback && a.callback(a.value);"
+                " const l = n.widgets.find((x) => x.name === 'lock_ratio'); l.value = true; l.callback && l.callback(true);"
+                " n.__deggCrop.setFrac({x:0.2,y:0.2,w:0.3,h:0.3}); return true; })()"
+            )
+            await asyncio.sleep(0.3)
+            check("кнопка «Сбросить» найдена", bool(await cdp.eval(CLICK % (2, 2))))
+            await asyncio.sleep(0.3)
+            reset = await cdp.eval(STATE_JS)
+            rf = reset.get("frac") or {}
+            check(
+                "«Сбросить»: рамка ровно по изображению",
+                abs(rf.get("x", -1)) < 1e-6
+                and abs(rf.get("y", -1)) < 1e-6
+                and abs(rf.get("w", 0) - 1) < 1e-6
+                and abs(rf.get("h", 0) - 1) < 1e-6,
+                rf,
+            )
+            reset_widgets = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " return { aspect: n.widgets.find((x) => x.name === 'aspect_ratio').value,"
+                " lock: n.widgets.find((x) => x.name === 'lock_ratio').value }; })()"
+            )
+            check("«Сбросить»: пропорции → «Свободные»", reset_widgets.get("aspect") == "free", reset_widgets)
+            check("«Сбросить»: замок выключен", reset_widgets.get("lock") is False, reset_widgets)
+            img_box = reset.get("imgBox") or {}
+            frame_box = reset.get("frameBox") or {}
+            check(
+                "«Сбросить»: рамка на сцене занимает всё изображение",
+                abs(frame_box.get("x", -1) - img_box.get("x", -2)) < 1.5
+                and abs(frame_box.get("y", -1) - img_box.get("y", -2)) < 1.5
+                and abs(frame_box.get("w", 0) - img_box.get("w", -1)) < 1.5
+                and abs(frame_box.get("h", 0) - img_box.get("h", -1)) < 1.5,
+                {"frame": frame_box, "image": img_box},
+            )
+
+            # Возвращаем режим результата, который ожидают проверки ниже
+            # (наш «Сбросить» честно переводит пропорции в «Свободные»).
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " a.value = '16:9'; a.callback && a.callback(a.value);"
+                " const l = n.widgets.find((x) => x.name === 'lock_ratio'); l.value = true; l.callback && l.callback(true);"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.3)
+
+            # ── язык: смена Comfy.Locale на лету ─────────────────────────
+            lang0 = await cdp.eval(
+                "(() => { const g = app.extensionManager.setting.get;"
+                " window.__probeLocaleGet = g;"
+                " window.__probeLocale = g('Comfy.Locale') || 'en';"
+                " return { locale: window.__probeLocale,"
+                " texts: [...window.__probeCrop.__deggCrop.widget.querySelectorAll('.degg-crop__btn')].map((b) => b.textContent),"
+                " lockOn: window.__probeCrop.widgets.find((x) => x.name === 'lock_ratio').options.on }; })()"
+            )
+            await cdp.eval(
+                "(() => { app.extensionManager.setting.get = (id) => (id === 'Comfy.Locale' ? 'en' : window.__probeLocaleGet(id));"
+                " app.ui.settings.dispatchChange('Comfy.Locale', 'en', window.__probeLocale); return true; })()"
+            )
+            await asyncio.sleep(0.2)
+            en = await cdp.eval(
+                "(() => ({ texts: [...window.__probeCrop.__deggCrop.widget.querySelectorAll('.degg-crop__btn')].map((b) => b.textContent),"
+                " lockOn: window.__probeCrop.widgets.find((x) => x.name === 'lock_ratio').options.on }))()"
+            )
+            check("язык на лету → EN-кнопки", en.get("texts") == ["Fit", "Center", "Reset"], en.get("texts"))
+            check("язык на лету → замок EN «Locked»", en.get("lockOn") == "Locked", en.get("lockOn"))
+
+            await cdp.eval(
+                "(() => { app.extensionManager.setting.get = window.__probeLocaleGet;"
+                " app.ui.settings.dispatchChange('Comfy.Locale', window.__probeLocale, 'en'); return true; })()"
+            )
+            await asyncio.sleep(0.2)
+            back = await cdp.eval(
+                "(() => [...window.__probeCrop.__deggCrop.widget.querySelectorAll('.degg-crop__btn')].map((b) => b.textContent))()"
+            )
+            expect_ru = str(lang0.get("locale", "en")).lower().startswith("ru")
+            check(
+                "язык на лету → возврат к исходной локали",
+                back == (["Вписать", "По центру", "Сбросить"] if expect_ru else ["Fit", "Center", "Reset"]),
+                {"locale": lang0.get("locale"), "texts": back},
+            )
+
             await cdp.eval(
                 "(() => { const n = window.__probeCrop; const w = n.widgets.find((x) => x.name === 'dim_outside');"
                 " w.value = 100; w.callback && w.callback(100); return w.value; })()"
