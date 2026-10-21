@@ -58,6 +58,11 @@
   `ratiosMatch`.
 - Проверки: Python 93, смоук 82, аудит 178, живая DOM-проба 96, реальный
   воркфлоу — OK; `check.py` → «ЗЕЛЁНОЕ: провалов 0».
+- Спека приведена в соответствие с кодом: устаревшие имена дорефакторинговой
+  версии (`resetCrop`, `reconcileManual`, `setWidgetValueQuiet`, `applyCoords`,
+  `pxRect`, `syncCoords`, старый экспорт редактора) заменены на актуальные
+  (`resetToImage`, `dropStaleManual`, `writeWidget`, `setFrameCenter`, `cropPx`,
+  `syncViews`, `{ widget, layout, commit, refresh, state }`).
 
 ## 3. Проблемы, которые встречались (и как решали)
 - ⛔ ГЛАВНЫЙ БАГ (поймал пользователь на воркфлоу «Test Crop»): JS считал
@@ -123,7 +128,8 @@
 
 ## 7. Связанные файлы
 - `crop_image.py`, `web/js/crop_image.js`, `__init__.py`, `check.json`
-- `SPECIFICATION.md` (§5.0, §5.0.1, §5.1, §7, §7.1), `README.md`
+- `SPECIFICATION.md` (§5.0, §5.0.1, §5.1, §7, §7.1) — имена функций соответствуют
+  коду; `README.md`
 - `tests/_test_crop_image.py`, `tests/_smoke_crop_image.mjs`,
   `tests/_audit_crop_image.mjs`, `tests/_probe_live_crop_image.py`,
   `tests/_probe_live_dom_crop_image.py`, `tests/_shot_live_node.py`,
