@@ -503,6 +503,7 @@ class DeggCropImage:
         fill="transparent",
         crop_rect="",
         output_size="",
+        golden_ratio=False,  # только отображение (сетка в превью), сервер не читает
         mask=None,
     ):
         if image is None or int(getattr(image, "shape", (0,))[0] or 0) == 0:

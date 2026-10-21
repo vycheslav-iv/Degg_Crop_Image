@@ -82,14 +82,28 @@ def main() -> int:
             src = Path(
                 r"D:\ComfyUI_windows_portable\ComfyUI\input"
             ) / IMAGE
-            if src.exists():
-                sw, sh = struct.unpack(">II", src.read_bytes()[16:24])
-                print("источник        :", sw, "x", sh)
-                print("МП источника (1024^2):", round(sw * sh / 1024 / 1024, 4))
-                print("МП источника (1e6)   :", round(sw * sh / 1e6, 4))
-                ok = (w, h) == (sw, sh)
-                print("ИТОГ:", "OK — результат ровно как у картинки" if ok else "СБОЙ: размер отличается")
-                return 0 if ok else 1
+            if not src.exists():
+                print("источник не найден — проверка пропущена")
+                return 0
+            sw, sh = struct.unpack(">II", src.read_bytes()[16:24])
+            print("источник        :", sw, "x", sh)
+            print("МП источника (1024^2):", round(sw * sh / 1024 / 1024, 4))
+            print("МП источника (1e6)   :", round(sw * sh / 1e6, 4))
+            # Без браузера сброса нет: размер считается от ПЕРЕДАННОГО МП (2.0),
+            # а не от размера картинки. Проверяем именно это поведение.
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            import crop_image as ci
+
+            exp_w, exp_h = ci.output_size(sw, sh, 2.0, 8)
+            print("ожидается по МП=2.0:", exp_w, "x", exp_h)
+            ok = (w, h) == (exp_w, exp_h)
+            print(
+                "ИТОГ:",
+                "OK — без браузера размер считается от переданного МП"
+                if ok
+                else "СБОЙ: размер не соответствует переданному МП",
+            )
+            return 0 if ok else 1
     return 1
 
 

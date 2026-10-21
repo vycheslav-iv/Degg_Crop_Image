@@ -602,6 +602,22 @@ check(
     and types["optional"]["golden_ratio"][1]["default"] is False,
     types["optional"]["golden_ratio"],
 )
+# ComfyUI передаёт все входы как именованные аргументы crop() — любой вход
+# без параметра в сигнатуре роняет ноду при запуске (TypeError).
+import inspect as _inspect
+
+_params = set(_inspect.signature(mod.DeggCropImage.crop).parameters)
+_declared = set(types["required"]) | set(types["optional"])
+check(
+    "все входы объявлены в сигнатуре crop()",
+    not (_declared - _params),
+    sorted(_declared - _params),
+)
+check(
+    "лишних параметров в crop() нет",
+    not (_params - _declared - {"self"}),
+    sorted(_params - _declared - {"self"}),
+)
 check(
     "мегапиксели и прочее остались обязательными",
     all(
