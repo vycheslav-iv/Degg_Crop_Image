@@ -64,6 +64,7 @@ const EXPECTED_OPTIONAL = [
   "frame_h",
   "aspect_ratio",
   "mask",
+  "golden_ratio",
 ];
 const optionalBlock = PY.slice(PY.indexOf('"optional": {'));
 const optionalNames = [...optionalBlock.matchAll(/^ {16}"([a-z_]+)":/gm)].map((m) => m[1]);
@@ -436,7 +437,7 @@ check(
 // — после, поэтому порядок на теле ноды задаёт редактор.
 const WIDGET_ORDER_EXPECTED = [
   "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
-  "megapixels", "multiplicity", "resample", "fill", "dim_outside",
+  "megapixels", "multiplicity", "resample", "fill", "dim_outside", "golden_ratio",
 ];
 const orderBlock = (JS.slice(JS.indexOf("const WIDGET_ORDER = [")).split("];")[0] || "");
 const orderFound = [...orderBlock.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
@@ -463,6 +464,42 @@ check(
   ["lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
    "crop_rect", "output_size"].every(optionalHas) &&
     !/"required":\s*\{[\s\S]{0,400}?"lock_ratio"/.test(PY),
+);
+
+// ── Сетка золотого сечения ─────────────────────────────────────────────────
+check(
+  "JS: точки золотого сечения — 1/φ и 1−1/φ (0.618 и 0.382)",
+  /const GOLDEN_RATIO = \(1 \+ Math\.sqrt\(5\)\) \/ 2/.test(JS) &&
+    /const GOLDEN_LINES = \[1 - 1 \/ GOLDEN_RATIO, 1 \/ GOLDEN_RATIO\]/.test(JS),
+);
+check(
+  "JS: слой сетки создан между затемнением и рамкой",
+  /make\('div', 'degg-crop__grid', stage\)/.test(JS) &&
+    /const dimEl = make\('div', 'degg-crop__dim', stage\);[\s\S]{0,700}?degg-crop__grid[\s\S]{0,700}?const frameEl = make\('div', 'degg-crop__frame', stage\)/.test(JS),
+);
+check(
+  "JS: сетка включается флажком golden_ratio",
+  /const showGolden = !!goldenWidget\?\.value/.test(JS) &&
+    /gridEl\.style\.display = showGolden \? '' : 'none'/.test(JS) &&
+    /widgetByName\(node, 'golden_ratio'\)/.test(JS),
+);
+check(
+  "JS: линии сетки стоят в точках 1/φ и 1−1/φ от краёв кадра",
+  /for \(const pos of GOLDEN_LINES\)/.test(JS) &&
+    /line\.dataset\.pos = String\(pos\)/.test(JS) &&
+    /line\.style\.left = `\$\{pos \* 100\}%`/.test(JS) &&
+    /line\.style\.top = `\$\{pos \* 100\}%`/.test(JS) &&
+    /setRect\(gridEl, fx, fy, fw, fh\)/.test(JS),
+);
+check(
+  "JS: сетка не мешает drag (pointer-events: none)",
+  /\.degg-crop__grid\{position:absolute;pointer-events:none\}/.test(JS) &&
+    /\.degg-crop__gridline\{position:absolute;/.test(JS),
+);
+check(
+  "Python: golden_ratio — необязательный BOOLEAN с выключенным по умолчанию",
+  /"golden_ratio":\s*\(\s*"BOOLEAN"/.test(PY) &&
+    /"default":\s*False/.test(PY),
 );
 
 // ── Итог ───────────────────────────────────────────────────────────────────

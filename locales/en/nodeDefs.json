@@ -59,6 +59,10 @@
         "name": "Result size",
         "tooltip": "Internal: manual result size 'W,H' in pixels, written by the node UI."
       },
+      "golden_ratio": {
+        "name": "Golden ratio grid",
+        "tooltip": "Display only: golden-ratio grid over the frame."
+      },
       "crop_rect": {
         "name": "Crop rectangle",
         "tooltip": "Internal: normalized crop rectangle, written by the node UI."

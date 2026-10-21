@@ -137,13 +137,13 @@ async def main() -> int:
               const crop = LiteGraph.createNode('DeggCropImage');
               crop.pos = [560, 120];
               g.add(crop);
-              crop.setSize([460, 460]);
+              crop.setSize([760, 760]);
               window.__probeLoad = load;
               window.__probeCrop = crop;
               load.connect(0, crop, 0);
               app.canvas.selectNodes([crop]);
               app.canvas.centerOnNode(crop);
-              app.canvas.setZoom(1);
+              app.canvas.setZoom(1.0);
               app.canvas.setDirty(true, true);
               return { load: load.id, crop: crop.id, size: crop.size.slice() };
             })()
@@ -160,12 +160,13 @@ async def main() -> int:
                     break
                 await asyncio.sleep(0.6)
             await asyncio.sleep(1.5)
-            # Сценарий: рамка выходит за пределы картинки (аутпейнт) при
-            # прозрачной заливке — видно и плашку, и заливку.
+            # Сценарий: кадр внутри картинки + включённая сетка золотого сечения.
             await evaluate(
                 "(() => { const crop = window.__probeCrop;"
                 " const cr = (crop.widgets || []).find((w) => w.name === 'crop_rect');"
-                " if (cr) cr.value = '{\"x\":-0.15,\"y\":-0.1,\"w\":1.3,\"h\":1.2}';"
+                " if (cr) cr.value = '{\"x\":0.12,\"y\":0.1,\"w\":0.6,\"h\":0.62}';"
+                " const g = (crop.widgets || []).find((w) => w.name === 'golden_ratio');"
+                " if (g) { g.value = true; if (g.callback) g.callback(true, app.canvas, crop); }"
                 " crop.__deggCrop.refresh();"
                 " return true; })()"
             )

@@ -329,6 +329,7 @@ async def main() -> int:
                 "resample",
                 "fill",
                 "dim_outside",
+                "golden_ratio",
             ]
             check("порядок виджетов как в задании", order == expected_order, order)
 
@@ -1650,6 +1651,67 @@ async def main() -> int:
                     print("  ВНИМАНИЕ: в воркфлоу нет ноды DeggCropImage — проверка пропущена")
             else:
                 print("  ВНИМАНИЕ: реальный воркфлоу не найден — проверка пропущена")
+
+            # ── СЕТКА ЗОЛОТОГО СЕЧЕНИЯ ────────────────────────────────────
+            # Линии стоят в точках 1/φ и 1−1/φ от краёв КАДРА и пересчитываются
+            # при изменении его размера.
+            golden_state = await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const w = n.widgets.find((x) => x.name === 'golden_ratio');"
+                " w.value = true; w.callback && w.callback(true, app.canvas, n);"
+                " const g = e.widget.querySelector('.degg-crop__grid');"
+                " const f = e.widget.querySelector('.degg-crop__frame').getBoundingClientRect();"
+                " const lines = [...e.widget.querySelectorAll('.degg-crop__gridline')].map((l) => {"
+                "  const b = l.getBoundingClientRect();"
+                "  return { axis: l.dataset.axis, pos: Number(l.dataset.pos),"
+                "   rel: l.dataset.axis === 'v' ? (b.x - f.x) / f.width : (b.y - f.y) / f.height,"
+                "   inside: b.x >= f.x - 1 && b.x <= f.x + f.width + 1"
+                "     && b.y >= f.y - 1 && b.y <= f.y + f.height + 1 }; });"
+                " return { visible: getComputedStyle(g).display !== 'none', lines }; })()"
+            )
+            gstate = golden_state or {}
+            g_lines = gstate.get("lines") or []
+            check("сетка: включается флажком (4 линии)", gstate.get("visible") is True and len(g_lines) == 4, golden_state)
+            PHI_INV = 1 / 1.6180339887498949
+            check(
+                "сетка: линии в точках 1/φ и 1−1/φ от краёв кадра",
+                len(g_lines) == 4
+                and all(
+                    abs(line.get("rel", 0) - (PHI_INV if line.get("pos", 0) > 0.5 else 1 - PHI_INV)) < 0.01
+                    for line in g_lines
+                )
+                and all(line.get("inside") for line in g_lines),
+                golden_state,
+            )
+            # Линии пересчитываются под новый размер кадра.
+            golden_resized = await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " window.__setFrame({ x: 0.05, y: 0.15, w: 0.35, h: 0.55 });"
+                " const f = e.widget.querySelector('.degg-crop__frame').getBoundingClientRect();"
+                " const lines = [...e.widget.querySelectorAll('.degg-crop__gridline')].map((l) => {"
+                "  const b = l.getBoundingClientRect();"
+                "  return l.dataset.axis === 'v' ? (b.x - f.x) / f.width : (b.y - f.y) / f.height; });"
+                " return { lines, frame: { w: f.width, h: f.height } }; })()"
+            )
+            resized_lines = (golden_resized or {}).get("lines") or []
+            check(
+                "сетка: после изменения кадра линии остались в точках золотого сечения",
+                len(resized_lines) == 4
+                and all(
+                    abs(rel - (PHI_INV if abs(rel - PHI_INV) < abs(rel - (1 - PHI_INV)) else 1 - PHI_INV)) < 0.01
+                    for rel in resized_lines
+                ),
+                golden_resized,
+            )
+            # Выключение — сетка скрыта.
+            golden_off = await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const w = n.widgets.find((x) => x.name === 'golden_ratio');"
+                " w.value = false; w.callback && w.callback(false, app.canvas, n);"
+                " const g = e.widget.querySelector('.degg-crop__grid');"
+                " return { visible: getComputedStyle(g).display !== 'none' }; })()"
+            )
+            check("сетка: выключается флажком", (golden_off or {}).get("visible") is False, golden_off)
 
             errors = await cdp.eval("window.__probeErrors")
             real = [e for e in (errors or []) if "example.png" not in e and "favicon" not in e]

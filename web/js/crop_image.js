@@ -30,6 +30,7 @@ const WIDGET_ORDER = [
   'resample',
   'fill',
   'dim_outside',
+  'golden_ratio',
 ];
 const CSS_ID = 'degg-crop-image-css';
 const MIN_H = 180;
@@ -46,6 +47,11 @@ const MEGAPIXEL_UNIT = 1024 * 1024;
 // Минимальный размер кадра, px: ручная правка размера и смена пропорций.
 const MIN_CROP_PX = 16;
 const MIN_RATIO_PX = 8;
+// Золотое сечение: точки деления кадра — 1/φ и 1−1/φ (0.618 и 0.382).
+// Линии сетки всегда стоят в этих точках ТЕКУЩЕЙ рамки, поэтому при
+// изменении её размера сетка пересчитывается (как в Capture One).
+const GOLDEN_RATIO = (1 + Math.sqrt(5)) / 2;
+const GOLDEN_LINES = [1 - 1 / GOLDEN_RATIO, 1 / GOLDEN_RATIO];
 
 const RATIO_VALUES = {
   '1:1': 1,
@@ -431,6 +437,9 @@ function css() {
   linear-gradient(45deg,#888 25%,transparent 25%,transparent 75%,#888 75%);
   background-size:16px 16px;background-position:0 0,8px 8px}
 .degg-crop__dim{position:absolute;pointer-events:none}
+.degg-crop__grid{position:absolute;pointer-events:none}
+.degg-crop__gridline{position:absolute;background:rgba(255,255,255,.6);
+  box-shadow:0 0 0 1px rgba(0,0,0,.35)}
 .degg-crop__frame{position:absolute;pointer-events:none;border:1px solid #fff;
   box-shadow:0 0 0 1px rgba(0,0,0,.55),inset 0 0 0 1px rgba(0,0,0,.35)}
 .degg-crop__h{position:absolute;pointer-events:none;width:${HANDLE}px;height:${HANDLE}px;
@@ -560,6 +569,18 @@ function createEditor(node, widget) {
   image.draggable = false;
   image.alt = '';
   const dimEl = make('div', 'degg-crop__dim', stage);
+  // Сетка золотого сечения — между затемнением и рамкой (рамка и уголки
+  // остаются поверх). Линии стоят в точках 1/φ и 1−1/φ от краёв кадра.
+  const gridEl = make('div', 'degg-crop__grid', stage);
+  const gridLines = [];
+  for (const pos of GOLDEN_LINES) {
+    for (const axis of ['v', 'h']) {
+      const line = make('div', 'degg-crop__gridline', gridEl);
+      line.dataset.axis = axis;
+      line.dataset.pos = String(pos);
+      gridLines.push(line);
+    }
+  }
   const frameEl = make('div', 'degg-crop__frame', stage);
   const badge = make('div', 'degg-crop__badge', stage);
   const empty = make('div', 'degg-crop__empty', stage);
@@ -624,6 +645,7 @@ function createEditor(node, widget) {
   const multWidget = widgetByName(node, 'multiplicity');
   const mpWidget = widgetByName(node, 'megapixels');
   const fillWidget = widgetByName(node, 'fill');
+  const goldenWidget = widgetByName(node, 'golden_ratio');
 
   if (cropWidget) cropWidget.hidden = true;
   setOptionLabels(aspectWidget, labels().aspect);
@@ -950,6 +972,28 @@ function createEditor(node, widget) {
     fillEl.className = `degg-crop__fill${fill === 'transparent' ? ' degg-crop__fill--checker' : ''}`;
     fillEl.style.background = fill === 'transparent' ? '' : fill === 'gray' ? '#808080' : fill;
     setRect(fillEl, fx, fy, fw, fh);
+
+    // Сетка золотого сечения: видна только по флажку, линии пересчитываются
+    // под текущий размер кадра.
+    const showGolden = !!goldenWidget?.value;
+    gridEl.style.display = showGolden ? '' : 'none';
+    if (showGolden) {
+      setRect(gridEl, fx, fy, fw, fh);
+      for (const line of gridLines) {
+        const pos = Number(line.dataset.pos);
+        if (line.dataset.axis === 'v') {
+          line.style.left = `${pos * 100}%`;
+          line.style.top = '0';
+          line.style.width = '1px';
+          line.style.height = '100%';
+        } else {
+          line.style.top = `${pos * 100}%`;
+          line.style.left = '0';
+          line.style.width = '100%';
+          line.style.height = '1px';
+        }
+      }
+    }
 
     setRect(frameEl, fx, fy, fw, fh);
     frameEl.style.borderColor = locked() ? '#7fe0a8' : '#ffffff';
@@ -1458,7 +1502,7 @@ function createEditor(node, widget) {
 
   // Изменение «косметики» и параметров выхода перерисовывает сцену сразу:
   // без этого затемнение и плашка отстают до следующего resize/drag.
-  for (const widget of [dimWidget, fillWidget, multWidget]) {
+  for (const widget of [dimWidget, fillWidget, multWidget, goldenWidget]) {
     onWidgetChange(widget, () => {
       commit();
     });

@@ -588,12 +588,19 @@ INTERFACE_INPUTS = [
     "frame_w",
     "frame_h",
     "aspect_ratio",
+    "golden_ratio",
 ]
 check(
     "интерфейсные входы объявлены необязательными",
     all(name in types["optional"] for name in INTERFACE_INPUTS)
     and not any(name in types["required"] for name in INTERFACE_INPUTS),
     {"optional": list(types["optional"]), "required": list(types["required"])},
+)
+check(
+    "golden_ratio — переключатель сетки, по умолчанию выключен",
+    types["optional"]["golden_ratio"][0] == "BOOLEAN"
+    and types["optional"]["golden_ratio"][1]["default"] is False,
+    types["optional"]["golden_ratio"],
 )
 check(
     "мегапиксели и прочее остались обязательными",

@@ -462,6 +462,13 @@ class DeggCropImage:
                         "Replaces the source alpha.",
                     },
                 ),
+                "golden_ratio": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Display only: golden-ratio grid over the frame.",
+                    },
+                ),
             },
         }
 
