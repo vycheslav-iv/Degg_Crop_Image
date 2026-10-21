@@ -1,0 +1,54 @@
+{
+  "DeggCropImage": {
+    "display_name": "Degg Crop Image",
+    "description": "Crop any part of the image or extend the frame outside its borders.",
+    "inputs": {
+      "image": {
+        "name": "Image",
+        "tooltip": "Source image batch."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "Optional alpha for the source (1 = opaque). Replaces the source alpha."
+      },
+      "aspect_ratio": {
+        "name": "Aspect ratio",
+        "tooltip": "Frame aspect ratio. Inactive while Lock Ratio is off."
+      },
+      "lock_ratio": {
+        "name": "Lock ratio",
+        "tooltip": "Keep the selected aspect ratio while dragging."
+      },
+      "dim_outside": {
+        "name": "Dim outside (%)",
+        "tooltip": "Display only: darken the area outside the frame."
+      },
+      "multiplicity": {
+        "name": "Multiplicity",
+        "tooltip": "Round the output width and height to this step."
+      },
+      "megapixels": {
+        "name": "Megapixels",
+        "tooltip": "Output area budget in megapixels (1 MP = 1,000,000 px)."
+      },
+      "resample": {
+        "name": "Resampling",
+        "tooltip": "Resampling filter used when the frame is rescaled."
+      },
+      "fill": {
+        "name": "Fill outside",
+        "tooltip": "Color of the area outside the source image."
+      },
+      "crop_rect": {
+        "name": "Crop rectangle",
+        "tooltip": "Internal: normalized crop rectangle, written by the node UI."
+      }
+    },
+    "outputs": {
+      "0": { "name": "image" },
+      "1": { "name": "mask" },
+      "2": { "name": "width" },
+      "3": { "name": "height" }
+    }
+  }
+}

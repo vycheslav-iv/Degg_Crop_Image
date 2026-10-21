@@ -1,0 +1,22 @@
+{
+  "checks": [
+    {
+      "label": "логика ноды (Python-песочница)",
+      "cmd": "python tests/_test_crop_image.py",
+      "expect": ["FAIL: 0", "ТЕСТ ПРОЙДЕН"],
+      "description": "рамка в долях, snap/MP-бюджет, дробные src/dst-границы, расширение за пределы кадра, заливка, маска по кадру батча, batch одного размера, мусорный crop_rect"
+    },
+    {
+      "label": "JS-смоук (vm + comfyAPI-заглушка)",
+      "cmd": "node tests/_smoke_crop_image.mjs",
+      "expect": ["SMOKE OK", "FAIL: 0"],
+      "description": "pyRound = Python round, паритет computeOutputSize с output_size, parseRectFrac/clampFrac, resizeFrame (пропорция, якорь, минимум), RATIO_VALUES = Python, регистрация расширения"
+    },
+    {
+      "label": "статический аудит",
+      "cmd": "node tests/_audit_crop_image.mjs",
+      "expect": ["аудит чист", "FAIL: 0"],
+      "description": "контракт Python/JS/locales, протокольные значения combo, запрещённые приёмы Nodes 2.0 (timer, computeSize, scripts/app.js, замеры DOM в sizing)"
+    }
+  ]
+}
