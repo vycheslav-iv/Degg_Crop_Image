@@ -291,6 +291,26 @@ class DeggCropImage:
                         "tooltip": "Keep the selected aspect ratio while dragging.",
                     },
                 ),
+                "center_x": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": -100000,
+                        "max": 100000,
+                        "step": 1,
+                        "tooltip": "Horizontal offset of the frame centre from the image centre, in pixels.",
+                    },
+                ),
+                "center_y": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": -100000,
+                        "max": 100000,
+                        "step": 1,
+                        "tooltip": "Vertical offset of the frame centre from the image centre, in pixels.",
+                    },
+                ),
                 "aspect_ratio": (
                     ASPECT_RATIOS,
                     {
@@ -374,6 +394,8 @@ class DeggCropImage:
         image,
         aspect_ratio="free",
         lock_ratio=True,
+        center_x=0,
+        center_y=0,
         dim_outside=50,
         multiplicity=8,
         megapixels=2.0,

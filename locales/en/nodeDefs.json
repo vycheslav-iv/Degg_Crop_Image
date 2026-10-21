@@ -11,6 +11,14 @@
         "name": "Mask",
         "tooltip": "Optional alpha for the source (1 = opaque). Replaces the source alpha."
       },
+      "center_x": {
+        "name": "Frame centre X",
+        "tooltip": "Horizontal offset of the frame centre from the image centre, in pixels."
+      },
+      "center_y": {
+        "name": "Frame centre Y",
+        "tooltip": "Vertical offset of the frame centre from the image centre, in pixels."
+      },
       "aspect_ratio": {
         "name": "Aspect ratio",
         "tooltip": "Frame aspect ratio. Inactive while Lock Ratio is off."

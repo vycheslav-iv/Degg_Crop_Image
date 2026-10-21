@@ -134,11 +134,11 @@ async def wait_for(cdp: CDP, expr: str, timeout: float = 60.0, label: str = ""):
     raise SystemExit(f"не дождались: {label or expr} (последнее: {last!r})")
 
 
-async def drag_mouse(cdp: CDP, x: float, y: float, dx: float, dy: float, steps: int = 10) -> None:
-    await cdp.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+async def drag_mouse(cdp: CDP, x: float, y: float, dx: float, dy: float, steps: int = 10, modifiers: int = 0) -> None:
+    await cdp.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "modifiers": modifiers})
     await cdp.call(
         "Input.dispatchMouseEvent",
-        {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 1},
+        {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 1, "modifiers": modifiers},
     )
     for i in range(1, steps + 1):
         await cdp.call(
@@ -149,12 +149,13 @@ async def drag_mouse(cdp: CDP, x: float, y: float, dx: float, dy: float, steps: 
                 "y": y + dy * i / steps,
                 "button": "left",
                 "buttons": 1,
+                "modifiers": modifiers,
             },
         )
         await asyncio.sleep(0.04)
     await cdp.call(
         "Input.dispatchMouseEvent",
-        {"type": "mouseReleased", "x": x + dx, "y": y + dy, "button": "left", "clickCount": 1, "buttons": 0},
+        {"type": "mouseReleased", "x": x + dx, "y": y + dy, "button": "left", "clickCount": 1, "buttons": 0, "modifiers": modifiers},
     )
 
 
@@ -305,6 +306,8 @@ async def main() -> int:
             )
             expected_order = [
                 "lock_ratio",
+                "center_x",
+                "center_y",
                 "aspect_ratio",
                 "megapixels",
                 "multiplicity",
@@ -429,8 +432,12 @@ async def main() -> int:
             )
             await asyncio.sleep(0.3)
             wide = await cdp.eval(STATE_JS)
-            fb = wide.get("frameBox") or {}
-            check("смена пропорции дала 16:9", abs(fb.get("w", 0) / max(1e-6, fb.get("h", 1)) - 16 / 9) < 0.03, fb)
+            # Пропорцию считаем по frac: при сжатой сцене frameBox округляется
+            # до целых CSS-пикселей (2×2) и теряет точность.
+            fb = wide.get("frac") or {}
+            wide_natural = wide.get("natural") or [1, 1]
+            fb_ratio = (fb.get("w", 0) * wide_natural[0]) / max(1e-6, fb.get("h", 1) * wide_natural[1])
+            check("смена пропорции дала 16:9", abs(fb_ratio - 16 / 9) < 0.01, {"frac": fb, "ratio": fb_ratio})
             frac_w = wide.get("frac") or {}
             after_center = (
                 (frac_w.get("x", 0) + frac_w.get("w", 0) / 2) * natural[0],
@@ -555,6 +562,262 @@ async def main() -> int:
                 " a.value = '16:9'; a.callback && a.callback(a.value);"
                 " const l = n.widgets.find((x) => x.name === 'lock_ratio'); l.value = true; l.callback && l.callback(true);"
                 " return true; })()"
+            )
+            await asyncio.sleep(0.3)
+
+            # ── фиксация текущих пропорций, координаты, Shift, подсказка ──
+            # «Зафиксировано» держит пропорции, которые у рамки есть СЕЙЧАС,
+            # а не подставляет выбранный пресет.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " const l = n.widgets.find((x) => x.name === 'lock_ratio');"
+                " a.value = 'free'; a.callback && a.callback('free');"
+                " e.setFrac({ x: 0.1, y: 0.1, w: 0.4, h: 0.25 });"
+                " l.value = false; l.callback && l.callback(false);"
+                " l.value = true; l.callback && l.callback(true); return true; })()"
+            )
+            await asyncio.sleep(0.25)
+            locked_free = await cdp.eval(STATE_JS)
+            lf = locked_free.get("frac") or {}
+            ln = locked_free.get("natural") or [1, 1]
+            lf_ratio = (lf.get("w", 0) * ln[0]) / max(1e-6, lf.get("h", 1) * ln[1])
+            check(
+                "«Зафиксировано» сохраняет текущие пропорции рамки (1.6)",
+                abs(lf.get("w", 0) - 0.4) < 1e-6 and abs(lf.get("h", 0) - 0.25) < 1e-6 and abs(lf_ratio - 1.6) < 0.01,
+                {"frac": lf, "ratio": lf_ratio},
+            )
+            lock_state = await cdp.eval(
+                "(() => { const n = window.__probeCrop; return {a: n.widgets.find(x=>x.name==='aspect_ratio').value,"
+                " l: n.widgets.find(x=>x.name==='lock_ratio').value}; })()"
+            )
+            check(
+                "фиксация текущих пропорций не трогает список пропорций (остаётся free)",
+                lock_state.get("a") == "free" and lock_state.get("l") is True,
+                lock_state,
+            )
+
+            # Выбор пресета применяет его и включает «Зафиксировано».
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " a.value = '4:3'; a.callback && a.callback(a.value); return true; })()"
+            )
+            await asyncio.sleep(0.25)
+            preset = await cdp.eval(STATE_JS)
+            pf = preset.get("frac") or {}
+            pn = preset.get("natural") or [1, 1]
+            pf_ratio = (pf.get("w", 0) * pn[0]) / max(1e-6, pf.get("h", 1) * pn[1])
+            preset_state = await cdp.eval(
+                "(() => window.__probeCrop.widgets.find(x=>x.name==='lock_ratio').value)()"
+            )
+            check("выбор пресета включает замок", preset_state is True, preset_state)
+            check("выбор пресета применяет пропорцию 4:3", abs(pf_ratio - 4 / 3) < 0.01, {"frac": pf, "ratio": pf_ratio})
+
+            # «Свободные» снимает замок.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " a.value = 'free'; a.callback && a.callback(a.value); return true; })()"
+            )
+            await asyncio.sleep(0.2)
+            free_state = await cdp.eval(
+                "(() => window.__probeCrop.widgets.find(x=>x.name==='lock_ratio').value)()"
+            )
+            check("«Свободные» выключает замок", free_state is False, free_state)
+
+            # Координаты: центр рамки относительно центра изображения, px.
+            await cdp.eval(
+                "(() => window.__probeCrop.__deggCrop.setFrac({ x: 0.1, y: 0.2, w: 0.4, h: 0.2 }))()"
+            )
+            await asyncio.sleep(0.2)
+            coords_before = await cdp.eval(
+                "(() => { const e = window.__probeCrop.__deggCrop;"
+                " return { x: e.centerX.value, y: e.centerY.value }; })()"
+            )
+            coord_natural = moved_natural = (await cdp.eval(STATE_JS)).get("natural") or [1, 1]
+            exp_x = round((0.1 + 0.4 / 2 - 0.5) * coord_natural[0])
+            exp_y = round((0.2 + 0.2 / 2 - 0.5) * coord_natural[1])
+            check(
+                "координаты показывают смещение центра рамки (px)",
+                abs(int(coords_before.get("x", 0)) - exp_x) <= 1
+                and abs(int(coords_before.get("y", 0)) - exp_y) <= 1,
+                {"got": coords_before, "expected": [exp_x, exp_y]},
+            )
+            # Правка нативного поля: значение → callback виджета → рамка едет.
+            await cdp.eval(
+                "(() => { const e = window.__probeCrop.__deggCrop;"
+                " e.centerX.value = 100; e.centerY.value = -50;"
+                " e.centerX.callback && e.centerX.callback(100, app.canvas, window.__probeCrop);"
+                " e.centerY.callback && e.centerY.callback(-50, app.canvas, window.__probeCrop);"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.2)
+            moved_coords = await cdp.eval(STATE_JS)
+            mc = moved_coords.get("frac") or {}
+            mn = moved_coords.get("natural") or [1, 1]
+            mc_offset = (
+                (mc.get("x", 0) + mc.get("w", 0) / 2 - 0.5) * mn[0],
+                (mc.get("y", 0) + mc.get("h", 0) / 2 - 0.5) * mn[1],
+            )
+            check(
+                "ввод координат ставит центр рамки в заданную точку",
+                abs(mc_offset[0] - 100) < 1.5 and abs(mc_offset[1] + 50) < 1.5,
+                {"offset": mc_offset, "frac": mc},
+            )
+
+            # Shift + сторона в свободном режиме: пропорции сохраняются,
+            # «Зафиксировано» не включается.
+            await cdp.eval(
+                "(() => window.__probeCrop.__deggCrop.setFrac({ x: 0.2, y: 0.2, w: 0.4, h: 0.2 }))()"
+            )
+            await asyncio.sleep(0.2)
+            east = await cdp.eval(
+                "(() => { const r = window.__probeCrop.__deggCrop.widget"
+                ".querySelector('.degg-crop__h[data-h=\"e\"]').getBoundingClientRect();"
+                " return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"
+            )
+            await drag_mouse(cdp, east["x"], east["y"], 40, 0, modifiers=8)
+            await asyncio.sleep(0.3)
+            shift_resize = await cdp.eval(STATE_JS)
+            sr = shift_resize.get("frac") or {}
+            sn = shift_resize.get("natural") or [1, 1]
+            sr_ratio = (sr.get("w", 0) * sn[0]) / max(1e-6, sr.get("h", 1) * sn[1])
+            shift_lock = await cdp.eval(
+                "(() => window.__probeCrop.widgets.find(x=>x.name==='lock_ratio').value)()"
+            )
+            check(
+                "Shift + край в «Свободно» сохраняет пропорции рамки",
+                abs(sr_ratio - 2) < 0.02 and sr.get("w", 0) > 0.4,
+                {"frac": sr, "ratio": sr_ratio},
+            )
+            check("Shift-ресайз не включает «Зафиксировано»", shift_lock is False, shift_lock)
+
+            # Shift + перетаскивание внутри: движение строго по оси.
+            await cdp.eval(
+                "(() => window.__probeCrop.__deggCrop.setFrac({ x: 0.1, y: 0.1, w: 0.8, h: 0.6 }))()"
+            )
+            await asyncio.sleep(0.2)
+            inside = await cdp.eval(
+                "(() => { const r = window.__probeCrop.__deggCrop.widget"
+                ".querySelector('.degg-crop__frame').getBoundingClientRect();"
+                " return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"
+            )
+            await drag_mouse(cdp, inside["x"], inside["y"], 50, 40, modifiers=8)
+            await asyncio.sleep(0.3)
+            axis = await cdp.eval(STATE_JS)
+            af = axis.get("frac") or {}
+            check(
+                "Shift при перемещении держит одну ось",
+                abs(af.get("y", 0) - 0.1) < 0.02 and abs(af.get("x", 0) - 0.1) > 0.02,
+                af,
+            )
+
+            # «Зафиксировано» применяет ЗАХВАЧЕННЫЕ пропорции при ресайзе:
+            # рамку тянем за край, соотношение сторон не должно измениться.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " const l = n.widgets.find((x) => x.name === 'lock_ratio');"
+                " a.value = 'free'; a.callback && a.callback('free');"
+                " l.value = false; l.callback && l.callback(false);"
+                " e.setFrac({ x: 0.1, y: 0.1, w: 0.4, h: 0.25 });"
+                " l.value = true; l.callback && l.callback(true); return true; })()"
+            )
+            await asyncio.sleep(0.25)
+            lock_east = await cdp.eval(
+                "(() => { const r = window.__probeCrop.__deggCrop.widget"
+                ".querySelector('.degg-crop__h[data-h=\"e\"]').getBoundingClientRect();"
+                " return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"
+            )
+            await drag_mouse(cdp, lock_east["x"], lock_east["y"], 40, 0)
+            await asyncio.sleep(0.3)
+            lock_resize = await cdp.eval(STATE_JS)
+            lr = lock_resize.get("frac") or {}
+            ln2 = lock_resize.get("natural") or [1, 1]
+            lr_ratio = (lr.get("w", 0) * ln2[0]) / max(1e-6, lr.get("h", 1) * ln2[1])
+            check(
+                "«Зафиксировано» держит захваченные пропорции при ресайзе",
+                abs(lr_ratio - 1.6) < 0.02 and lr.get("w", 0) > 0.4,
+                {"frac": lr, "ratio": lr_ratio},
+            )
+
+            # Рамка шире изображения: сцена увеличивается, drag не должен
+            # «разгонять» рамку (обратная связь через меняющийся масштаб).
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " a.value = '16:9'; a.callback && a.callback('16:9');"
+                " e.setFrac({ x: 0.2, y: 0.05, w: 1.6, h: 0.9 }); return true; })()"
+            )
+            await asyncio.sleep(0.3)
+            wide_west = await cdp.eval(
+                "(() => { const r = window.__probeCrop.__deggCrop.widget"
+                ".querySelector('.degg-crop__h[data-h=\"w\"]').getBoundingClientRect();"
+                " return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"
+            )
+            await drag_mouse(cdp, wide_west["x"], wide_west["y"], -120, 0)
+            await asyncio.sleep(0.35)
+            runaway = await cdp.eval(STATE_JS)
+            rr = runaway.get("frac") or {}
+            rn = runaway.get("natural") or [1, 1]
+            rr_ratio = (rr.get("w", 0) * rn[0]) / max(1e-6, rr.get("h", 1) * rn[1])
+            check(
+                "drag за пределы изображения не разгоняет рамку",
+                rr.get("w", 0) < 4 and rr.get("h", 0) < 4,
+                {"frac": rr},
+            )
+            check(
+                "drag рамки шире изображения сохраняет пропорцию",
+                abs(rr_ratio - 16 / 9) < 0.02,
+                {"frac": rr, "ratio": rr_ratio},
+            )
+
+            # Иконка «?»: подсказка открывается и закрывается, текст не пустой.
+            help_closed = await cdp.eval(
+                "(() => window.__probeCrop.__deggCrop.helpBox.style.display)()"
+            )
+            await cdp.eval(
+                "(() => { window.__probeCrop.__deggCrop.widget.querySelector('.degg-crop__help').click(); return true; })()"
+            )
+            await asyncio.sleep(0.15)
+            help_open = await cdp.eval(
+                "(() => { const b = window.__probeCrop.__deggCrop.helpBox;"
+                " return { display: b.style.display, text: b.textContent }; })()"
+            )
+            check("подсказка «?» закрыта по умолчанию", help_closed in ("", "none"), help_closed)
+            help_place = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const btn = n.__deggCrop.widget.querySelector('.degg-crop__help');"
+                " const stage = n.__deggCrop.widget.querySelector('.degg-crop__stage');"
+                " const b = btn.getBoundingClientRect(); const s = stage.getBoundingClientRect();"
+                " return { inStage: stage.contains(btn), right: s.right - b.right, top: b.top - s.top }; })()"
+            )
+            check(
+                "кнопка «?» стоит в правом верхнем углу превью",
+                help_place.get("inStage") is True
+                and abs(help_place.get("right", 0) - 8) < 2
+                and abs(help_place.get("top", 0) - 6) < 2,
+                help_place,
+            )
+            check(
+                "подсказка «?» открывается и описывает Shift/координаты",
+                help_open.get("display") == "block"
+                and "Shift" in (help_open.get("text") or "")
+                and "X/Y" in (help_open.get("text") or ""),
+                {"display": help_open.get("display"), "text": (help_open.get("text") or "")[:120]},
+            )
+            await cdp.eval(
+                "(() => { window.__probeCrop.__deggCrop.widget.querySelector('.degg-crop__help').click(); return true; })()"
+            )
+            await asyncio.sleep(0.1)
+            check(
+                "подсказка «?» закрывается повторным кликом",
+                await cdp.eval("(() => window.__probeCrop.__deggCrop.helpBox.style.display)()") == "none",
+            )
+
+            # Возвращаем 16:9 для проверок заливки/плашки ниже.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop; const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " a.value = '16:9'; a.callback && a.callback(a.value); return true; })()"
             )
             await asyncio.sleep(0.3)
 

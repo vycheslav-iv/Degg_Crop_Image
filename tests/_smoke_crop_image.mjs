@@ -75,7 +75,7 @@ const src = fs
 vm.runInContext(src + "\nglobalThis.__RATIOS = RATIO_VALUES;\n", ctx, { filename: JS });
 
 const { pyRound, computeOutputSize, parseRectFrac, clampFrac, resizeFrame } = ctx;
-const { centerFrameFrac, fitFrameFrac } = ctx;
+const { centerFrameFrac, fitFrameFrac, frameCenterOffset, moveFrameToOffset, axisDelta } = ctx;
 
 // ── 1. pyRound = Python round() (banker's) ──────────────────────────────────
 check("pyRound(0.5) == 0", pyRound(0.5) === 0, pyRound(0.5));
@@ -243,6 +243,26 @@ check("fit: большая рамка отцентрирована", near1(hugeF
 
 const already = F({ x: 0.25, y: 0, w: 0.5, h: 1 });
 check("fit: рамка ровно по границам не меняется", near1(already.w, 0.5) && near1(already.h, 1) && near1(already.x, 0.25), JSON.stringify(already));
+
+// ── 7. Координаты центра рамки и Shift-движение ─────────────────────────────
+const OFF = (r, w, h) => (typeof frameCenterOffset === "function" ? frameCenterOffset(r, w, h) : { x: NaN, y: NaN });
+const MOV = (r, w, h, ox, oy) => (typeof moveFrameToOffset === "function" ? moveFrameToOffset(r, w, h, ox, oy) : { x: NaN, y: NaN, w: NaN, h: NaN });
+const AXIS = (dx, dy) => (typeof axisDelta === "function" ? axisDelta(dx, dy) : { dx: NaN, dy: NaN });
+
+const off = OFF({ x: 0.1, y: 0.2, w: 0.4, h: 0.2 }, 1000, 500);
+check("координаты: смещение центра рамки от центра изображения", near1(off.x, -200) && near1(off.y, -100), JSON.stringify(off));
+
+const moved = MOV({ x: 0, y: 0, w: 0.2, h: 0.2 }, 1000, 500, 100, -50);
+check(
+  "координаты: рамка встаёт центром в заданное смещение",
+  near1(moved.x, 0.5) && near1(moved.y, 0.3) && near1(moved.w, 0.2) && near1(moved.h, 0.2),
+  JSON.stringify(moved),
+);
+
+const ax = AXIS(30, 10);
+check("Shift-движение: горизонталь побеждает при большем dx", near1(ax.dx, 30) && near1(ax.dy, 0), JSON.stringify(ax));
+const ay = AXIS(5, -20);
+check("Shift-движение: вертикаль побеждает при большем dy", near1(ay.dx, 0) && near1(ay.dy, -20), JSON.stringify(ay));
 
 // ── итог ───────────────────────────────────────────────────────────────────
 console.log("");

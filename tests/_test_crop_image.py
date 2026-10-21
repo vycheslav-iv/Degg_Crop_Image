@@ -456,6 +456,18 @@ check("lanczos is the default resample", types["required"]["resample"][1]["defau
 check("lock_ratio default on", types["required"]["lock_ratio"][1]["default"] is True)
 _lock = types["required"]["lock_ratio"][1]
 check("lock_ratio подписи EN-источник", _lock.get("label_on") == "Locked" and _lock.get("label_off") == "Free", _lock)
+_cx = types["required"]["center_x"][1]
+_cy = types["required"]["center_y"][1]
+check(
+    "center_x/center_y — INT со знаком (смещение в пикселях)",
+    types["required"]["center_x"][0] == "INT"
+    and types["required"]["center_y"][0] == "INT"
+    and _cx["min"] < 0
+    and _cy["min"] < 0
+    and _cx["step"] == 1
+    and _cy["step"] == 1,
+    {"center_x": _cx, "center_y": _cy},
+)
 check(
     "Python без русского текста",
     not any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in str(types)) ,
@@ -464,6 +476,8 @@ check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom
 # Порядок виджетов на теле ноды = порядок ключей INPUT_TYPES.
 EXPECTED_WIDGET_ORDER = [
     "lock_ratio",
+    "center_x",
+    "center_y",
     "aspect_ratio",
     "megapixels",
     "multiplicity",

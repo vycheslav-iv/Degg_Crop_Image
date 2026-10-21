@@ -49,6 +49,8 @@ const inputNames = [...required.matchAll(/^ {16}"?([a-z_]+)"?:\s*\(/gm)].map((m)
 const EXPECTED = [
   "image",
   "lock_ratio",
+  "center_x",
+  "center_y",
   "aspect_ratio",
   "megapixels",
   "multiplicity",
@@ -145,11 +147,57 @@ check("JS: «Вписать» через fitFrameFrac", /buttonEls\.fit[\s\S]{0,
 check("JS: «По центру» через centerFrameFrac", /buttonEls\.center[\s\S]{0,200}?centerFrameFrac\(state\.frac\)/.test(JS));
 check(
   "JS: «Сбросить» = рамка 0,0,1,1 + свободные + замок off",
-  /buttonEls\.reset[\s\S]{0,400}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}[\s\S]{0,200}?setWidgetValue\(lockWidget, false\)[\s\S]{0,200}?setWidgetValue\(aspectWidget, 'free'\)/.test(JS),
+  /buttonEls\.reset[\s\S]{0,400}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}[\s\S]{0,240}?programmatic\(lockWidget, false\)[\s\S]{0,200}?programmatic\(aspectWidget, 'free'\)/.test(JS),
 );
 check(
   "JS: «Сбросить» не применяет пропорцию (нет applyAspect в обработчике)",
   !/buttonEls\.reset[\s\S]{0,500}?applyAspect/.test(JS),
+);
+const lockBlock = (JS.split("if (lockWidget?.callback)")[1] || "").split("// Изменение «косметики»")[0];
+check(
+  "JS: замок фиксирует ТЕКУЩИЕ пропорции рамки (currentPxRatio, без applyAspect)",
+  /currentPxRatio\(\)/.test(lockBlock) && !/applyAspect/.test(lockBlock),
+);
+check(
+  "JS: выключение замка переводит «Пропорции» в свободные",
+  /programmatic\(aspectWidget, 'free'\)/.test(lockBlock),
+);
+const aspectBlock = (JS.split("if (aspectWidget?.callback)")[1] || "").split("if (lockWidget?.callback)")[0];
+check(
+  "JS: выбор пресета пропорций включает замок и применяет его",
+  /programmatic\(lockWidget, true\)[\s\S]{0,80}?applyAspect\(\)/.test(aspectBlock),
+);
+check(
+  "JS: «Свободные» снимает замок без изменения рамки",
+  /aspectWidget\.value === 'free'[\s\S]{0,160}?programmatic\(lockWidget, false\)/.test(aspectBlock)
+    && !/aspectWidget\.value === 'free'[\s\S]{0,160}?applyAspect/.test(aspectBlock),
+);
+check(
+  "JS: свободный режим + Shift сохраняет текущие пропорции при ресайзе",
+  /const dragRatio = locked\(\) \? effectiveRatio\(\) : event\.shiftKey \? state\.drag\.ratio : null/.test(JS),
+);
+check(
+  "JS: Shift при перемещении фиксирует ось (axisDelta)",
+  /event\.shiftKey \? axisDelta\(dx, dy\)/.test(JS),
+);
+check(
+  "JS: координаты центра рамки — пересчёт в пикселях через нативные виджеты",
+  /frameCenterOffset\(state\.frac, state\.img\.w, state\.img\.h\)/.test(JS)
+    && /moveFrameToOffset\(state\.frac, state\.img\.w, state\.img\.h, ox, oy\)/.test(JS),
+);
+check(
+  "JS: подсказка «?» собирается из LABELS (ru/en) и перерисовывается при смене языка",
+  /const helpBtn = make\('button', 'degg-crop__help'/.test(JS)
+    && /function renderHelp\(\)/.test(JS)
+    && /for \(const line of t\.help\)/.test(JS)
+    && /renderHelp\(\);/.test(JS),
+);
+check(
+  "locales: подписи координат RU/EN (у нативных виджетов)",
+  (RU[NODE]?.inputs?.center_x?.name ?? "") === "Центр рамки X"
+    && (RU[NODE]?.inputs?.center_y?.name ?? "") === "Центр рамки Y"
+    && (EN[NODE]?.inputs?.center_x?.name ?? "") === "Frame centre X"
+    && (EN[NODE]?.inputs?.center_y?.name ?? "") === "Frame centre Y",
 );
 check("JS: подписи замка локализуются (options.on/off)", /lockWidget\.options\.on = t\.lockOn/.test(JS) && /lockWidget\.options\.off = t\.lockOff/.test(JS));
 check(
@@ -226,6 +274,54 @@ check(
   "JS: перезаливка файла с тем же именем перерисовывает превью",
   /loadSource\(\{\s*force:\s*sourceOutputsChanged\(\)\s*\}\)/.test(JS) &&
     /const\s+changed\s*=\s*next\s*!==\s*watchedOutputs/.test(JS),
+);
+
+// ── Drag: масштаб сцены фиксируется на pointerdown ───────────────────────────
+// Иначе рост рамки меняет union → scale → следующий pointermove считает
+// дельту по новому масштабу, и рамка разгоняется до клампа.
+check(
+  "JS: масштаб и смещение сцены фиксируются на pointerdown",
+  /state\.drag\s*=\s*\{[\s\S]{0,400}?view\s*,/.test(JS) &&
+    /(view\.scale\s*=\s*state\.scale|scale:\s*state\.scale)/.test(JS) &&
+    /(view\.offX\s*=\s*state\.offX|offX:\s*state\.offX)/.test(JS) &&
+    /(view\.offY\s*=\s*state\.offY|offY:\s*state\.offY)/.test(JS),
+);
+check(
+  "JS: pointermove считает точку по зафиксированному view",
+  /sourceFromLocal\(localFromEvent\(event,\s*state\.drag\.view\),\s*state\.drag\.view\)/.test(JS),
+);
+
+// ── Координаты — нативные опции ноды, «?» — в превью ────────────────────────
+check(
+  "Python: координаты — INT-опции сразу под lock_ratio",
+  /"lock_ratio":[\s\S]{0,900}?"center_x":\s*\(\s*"INT"/.test(PY) &&
+    /"center_y":\s*\(\s*"INT"/.test(PY),
+);
+check(
+  "JS: собственной строки координат в DOM нет",
+  !/degg-crop__coords/.test(JS) && !/degg-crop__num/.test(JS),
+);
+check(
+  "JS: координаты живут в нативных виджетах center_x/center_y",
+  /widgetByName\(node,\s*'center_x'\)/.test(JS) &&
+    /widgetByName\(node,\s*'center_y'\)/.test(JS),
+);
+check(
+  "JS: запись координат БЕЗ callback'а (тихая)",
+  /function setWidgetValueQuiet\([\s\S]{0,700}?widget\.value\s*=\s*value/.test(JS) &&
+    /setWidgetValueQuiet\(centerXWidget,\s*Math\.round\(offset\.x\)\)/.test(JS) &&
+    /setWidgetValueQuiet\(centerYWidget,\s*Math\.round\(offset\.y\)\)/.test(JS),
+);
+check(
+  "JS: правка координат двигает рамку (applyCoords → moveFrameToOffset)",
+  /function applyCoords\([\s\S]{0,400}?moveFrameToOffset\(/.test(JS) &&
+    /widget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,400}?if \(widget === centerXWidget\) applyCoords\(/.test(JS) &&
+    /widget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,400}?else applyCoords\(/.test(JS),
+);
+check(
+  "JS: кнопка «?» живёт в превью (внутри stage), а подсказка — в корне",
+  /make\('button',\s*'degg-crop__help',\s*stage\)/.test(JS) &&
+    /make\('div',\s*'degg-crop__helpbox',\s*root\)/.test(JS),
 );
 
 // ── Итог ───────────────────────────────────────────────────────────────────

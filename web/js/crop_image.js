@@ -62,6 +62,18 @@ const LABELS = {
     resetTip: 'Сбросить рамку к целому изображению и свободным пропорциям',
     lockOn: 'Зафиксировано',
     lockOff: 'Свободно',
+    helpTitle: 'Подсказка',
+    help: [
+      'Перетаскивание внутри рамки — перемещение.',
+      'Shift + перетаскивание внутри — строго по горизонтали или вертикали.',
+      'Углы и стороны рамки — изменение размера.',
+      'Shift + угол/сторона при «Свободно» — масштаб с сохранением текущих пропорций.',
+      '«Зафиксировано» фиксирует пропорции, которые есть у рамки сейчас.',
+      'Выбор пропорции в списке — рамка принимает её и включает фиксацию.',
+      '«Свободно» — список пропорций переключается на «Свободные».',
+      'X/Y — положение центра рамки относительно центра изображения, в пикселях.',
+      '«Вписать» — вписать рамку в изображение с сохранением пропорций; «По центру» — центрировать; «Сбросить» — рамка по изображению и свободные пропорции.',
+    ],
   },
   en: {
     aspect: { free: 'Free' },
@@ -80,6 +92,18 @@ const LABELS = {
     resetTip: 'Reset the frame to the whole image and free proportions',
     lockOn: 'Locked',
     lockOff: 'Free',
+    helpTitle: 'Help',
+    help: [
+      'Drag inside the frame to move it.',
+      'Shift + drag inside — strictly horizontal or vertical movement.',
+      'Frame corners and edges resize it.',
+      'Shift + corner/edge while Free — scale keeping the current proportions.',
+      'Locked freezes the proportions the frame has right now.',
+      'Picking a ratio from the list applies it and turns locking on.',
+      'Free switches the ratio list to Free.',
+      'X/Y — frame centre offset from the image centre, in pixels.',
+      'Fit — fit the frame into the image keeping proportions; Center — centre it; Reset — whole image and free proportions.',
+    ],
   },
 };
 
@@ -167,6 +191,40 @@ export function fitFrameFrac(rect) {
   return { x: (1 - nw) / 2, y: (1 - nh) / 2, w: nw, h: nh };
 }
 
+/** Offset of the frame centre from the image centre, in source pixels. */
+export function frameCenterOffset(rect, imgW, imgH) {
+  const r = rect || {};
+  const w = Number(r.w);
+  const h = Number(r.h);
+  if (!(imgW > 0) || !(imgH > 0) || !(w > 0) || !(h > 0)) {
+    return { x: 0, y: 0 };
+  }
+  return {
+    x: (Number(r.x) + w / 2 - 0.5) * imgW,
+    y: (Number(r.y) + h / 2 - 0.5) * imgH,
+  };
+}
+
+/** Move the frame so its centre sits at the given offset from the image centre. */
+export function moveFrameToOffset(rect, imgW, imgH, offsetX, offsetY) {
+  const w = Number(rect?.w);
+  const h = Number(rect?.h);
+  if (!(imgW > 0) || !(imgH > 0) || !(w > 0) || !(h > 0)) return { ...rect };
+  const cx = imgW / 2 + Number(offsetX || 0);
+  const cy = imgH / 2 + Number(offsetY || 0);
+  return clampFrac({
+    x: (cx - (w * imgW) / 2) / imgW,
+    y: (cy - (h * imgH) / 2) / imgH,
+    w,
+    h,
+  });
+}
+
+/** Shift-constrained move: lock to the dominant axis. */
+export function axisDelta(dx, dy) {
+  return Math.abs(dx) >= Math.abs(dy) ? { dx, dy: 0 } : { dx: 0, dy };
+}
+
 /** Resize a source-space frame from a drag delta. */
 export function resizeFrame(start, dx, dy, kind, ratio, imgW, imgH, minPx = 16) {
   let x0 = start.x;
@@ -243,7 +301,7 @@ function css() {
   const style = document.createElement('style');
   style.id = CSS_ID;
   style.textContent = `
-.degg-crop{display:flex;flex-direction:column;gap:6px;width:100%;height:100%;
+.degg-crop{position:relative;display:flex;flex-direction:column;gap:6px;width:100%;height:100%;
   font:12px/1.2 system-ui,sans-serif;color:#ddd;box-sizing:border-box;overflow:hidden}
 .degg-crop *{box-sizing:border-box}
 .degg-crop__bar{display:flex;gap:6px;flex:0 0 24px}
@@ -251,6 +309,16 @@ function css() {
   border-radius:6px;background:#2b2b2b;color:#ddd;font:inherit;cursor:pointer;overflow:hidden;
   white-space:nowrap;text-overflow:ellipsis}
 .degg-crop__btn:hover{background:#383838}
+.degg-crop__help{position:absolute;top:6px;right:8px;z-index:12;width:18px;height:18px;
+  padding:0;border:1px solid rgba(255,255,255,.4);border-radius:9px;
+  background:rgba(24,24,28,.75);color:#fff;font:bold 11px/1 system-ui,sans-serif;
+  cursor:help}
+.degg-crop__help:hover{background:rgba(60,60,68,.9)}
+.degg-crop__helpbox{position:absolute;right:8px;z-index:11;display:none;
+  max-width:min(360px,90%);overflow:auto;padding:8px 10px;
+  border:1px solid rgba(255,255,255,.4);border-radius:6px;background:rgba(18,18,18,.97);
+  color:#ccc;font:11px/15px system-ui,sans-serif;pointer-events:none}
+.degg-crop__helpbox b{display:block;color:#fff;margin-bottom:4px}
 .degg-crop__stage{position:relative;flex:1 1 auto;min-height:80px;overflow:hidden;
   border-radius:6px;background:#141414;touch-action:none;user-select:none;cursor:default}
 .degg-crop__img{position:absolute;pointer-events:none;image-rendering:auto}
@@ -391,6 +459,13 @@ function createEditor(node, widget) {
   const frameEl = make('div', 'degg-crop__frame', stage);
   const badge = make('div', 'degg-crop__badge', stage);
   const empty = make('div', 'degg-crop__empty', stage);
+  // Иконка «?» — в правом верхнем углу ПРЕВЬЮ (как в Degg_Images_Save_Compare).
+  const helpBtn = make('button', 'degg-crop__help', stage);
+  helpBtn.type = 'button';
+  helpBtn.textContent = '?';
+  // Подсказка живёт в корне: сцена режет содержимое (overflow:hidden), а текст
+  // подсказки должен перекрывать её целиком.
+  const helpBox = make('div', 'degg-crop__helpbox', root);
   const handles = {};
   for (const name of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
     handles[name] = make('div', 'degg-crop__h', stage);
@@ -418,11 +493,15 @@ function createEditor(node, widget) {
     offY: 0,
     drag: null,
     pending: false,
+    ratioLock: null,
+    suppress: 0,
   };
 
   const cropWidget = widgetByName(node, 'crop_rect');
   const aspectWidget = widgetByName(node, 'aspect_ratio');
   const lockWidget = widgetByName(node, 'lock_ratio');
+  const centerXWidget = widgetByName(node, 'center_x');
+  const centerYWidget = widgetByName(node, 'center_y');
   const dimWidget = widgetByName(node, 'dim_outside');
   const multWidget = widgetByName(node, 'multiplicity');
   const mpWidget = widgetByName(node, 'megapixels');
@@ -439,6 +518,51 @@ function createEditor(node, widget) {
 
   function locked() {
     return !!lockWidget?.value;
+  }
+
+  function currentPxRatio() {
+    const r = pxRect();
+    return r.w > 0 && r.h > 0 ? r.w / r.h : null;
+  }
+
+  // «Зафиксировано» держит либо выбранный пресет, либо пропорции, которые были
+  // у рамки в момент включения (когда в списке «Свободные»).
+  function effectiveRatio() {
+    const preset = ratio();
+    if (preset) return preset;
+    if (!locked()) return null;
+    return state.ratioLock ?? currentPxRatio();
+  }
+
+  function programmatic(widget, value) {
+    state.suppress += 1;
+    try {
+      return setWidgetValue(widget, value);
+    } finally {
+      state.suppress -= 1;
+    }
+  }
+
+  // Координаты — обычные INT-виджеты ноды (нижние опции). Значение пишется
+  // ТИХО (без callback'а), иначе перетаскивание рамки запускало бы пересчёт
+  // ноды на каждом кадре.
+  function syncCoords() {
+    if (!state.img) {
+      setWidgetValueQuiet(centerXWidget, 0);
+      setWidgetValueQuiet(centerYWidget, 0);
+      return;
+    }
+    const offset = frameCenterOffset(state.frac, state.img.w, state.img.h);
+    setWidgetValueQuiet(centerXWidget, Math.round(offset.x));
+    setWidgetValueQuiet(centerYWidget, Math.round(offset.y));
+  }
+
+  function applyCoords(valueX, valueY) {
+    if (!state.img) return;
+    const ox = Number(valueX ?? centerXWidget?.value);
+    const oy = Number(valueY ?? centerYWidget?.value);
+    if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
+    setFrac(moveFrameToOffset(state.frac, state.img.w, state.img.h, ox, oy));
   }
 
   function pxRect() {
@@ -497,6 +621,7 @@ function createEditor(node, widget) {
     if (save) persist();
     refreshLayoutSize();
     layout();
+    syncCoords();
   }
 
   function layoutBadge(r) {
@@ -511,7 +636,16 @@ function createEditor(node, widget) {
     badge.style.display = '';
   }
 
+  // Подсказка открывается под кнопкой «?» — она лежит в превью, а сам блок
+  // текста перекрывает сцену (сцена режет содержимое, поэтому блок — в корне).
+  function syncHelpAnchor() {
+    const top = (stage.offsetTop || 0) + 26;
+    helpBox.style.top = `${top}px`;
+    helpBox.style.maxHeight = `max(80px, calc(100% - ${top + 8}px))`;
+  }
+
   function layout() {
+    syncHelpAnchor();
     const width = stage.clientWidth;
     const height = stage.clientHeight;
     if (!width || !height) return;
@@ -725,6 +859,13 @@ function createEditor(node, widget) {
       state.img = { w, h };
       if (changed) {
         if (locked() && ratio()) applyAspect();
+        else if (locked()) {
+          state.ratioLock = currentPxRatio();
+          persist();
+          refreshLayoutSize();
+          layout();
+          syncCoords();
+        }
         else {
           // Keep the relative frame; normalize the transport value once.
           persist();
@@ -749,19 +890,25 @@ function createEditor(node, widget) {
     image.src = force ? `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}` : url;
   }
 
-  function localFromEvent(event) {
-    const rect = stage.getBoundingClientRect();
-    const zoom = rect.width / Math.max(1, stage.clientWidth);
+  function localFromEvent(event, view) {
+    const rect = view?.rect || stage.getBoundingClientRect();
+    const zoom = view?.zoom || rect.width / Math.max(1, stage.clientWidth);
     return {
       x: (event.clientX - rect.left) / (zoom || 1),
       y: (event.clientY - rect.top) / (zoom || 1),
     };
   }
 
-  function sourceFromLocal(point) {
+  // Масштаб и смещение сцены меняются, пока рамка растёт (union расширяется).
+  // Точку отсчёта drag фиксируем на pointerdown, иначе каждый следующий move
+  // пересчитывается новым scale и рамка разгоняется до клампа.
+  function sourceFromLocal(point, view) {
+    const scale = view?.scale || state.scale || 1;
+    const offX = view ? view.offX : state.offX;
+    const offY = view ? view.offY : state.offY;
     return {
-      x: (point.x - state.offX) / (state.scale || 1),
-      y: (point.y - state.offY) / (state.scale || 1),
+      x: (point.x - offX) / scale,
+      y: (point.y - offY) / scale,
     };
   }
 
@@ -809,10 +956,20 @@ function createEditor(node, widget) {
     const local = localFromEvent(event);
     const kind = hitTest(local);
     if (!kind) return;
+    const view = {
+      rect: stage.getBoundingClientRect(),
+      zoom: 0,
+      scale: state.scale,
+      offX: state.offX,
+      offY: state.offY,
+    };
+    view.zoom = view.rect.width / Math.max(1, stage.clientWidth);
     state.drag = {
       kind,
-      start: sourceFromLocal(local),
+      start: sourceFromLocal(local, view),
       rect: pxRect(),
+      ratio: currentPxRatio(),
+      view,
     };
     try {
       stage.setPointerCapture(event.pointerId);
@@ -830,28 +987,32 @@ function createEditor(node, widget) {
     }
     event.preventDefault();
     event.stopPropagation();
-    const point = sourceFromLocal(localFromEvent(event));
+    const point = sourceFromLocal(localFromEvent(event, state.drag.view), state.drag.view);
     const dx = point.x - state.drag.start.x;
     const dy = point.y - state.drag.start.y;
 
     if (state.drag.kind === 'move') {
       const start = state.drag.rect;
+      const delta = event.shiftKey ? axisDelta(dx, dy) : { dx, dy };
       setFrac({
-        x: (start.x + dx) / state.img.w,
-        y: (start.y + dy) / state.img.h,
+        x: (start.x + delta.dx) / state.img.w,
+        y: (start.y + delta.dy) / state.img.h,
         w: start.w / state.img.w,
         h: start.h / state.img.h,
       });
       return;
     }
 
+    // В свободном режиме Shift сохраняет текущие пропорции рамки, не включая
+    // «Зафиксировано»: ratio берётся из состояния на момент начала drag.
+    const dragRatio = locked() ? effectiveRatio() : event.shiftKey ? state.drag.ratio : null;
     setFrac(
       resizeFrame(
         state.drag.rect,
         dx,
         dy,
         state.drag.kind,
-        locked() ? ratio() : null,
+        dragRatio,
         state.img.w,
         state.img.h,
       ),
@@ -895,12 +1056,42 @@ function createEditor(node, widget) {
   buttonEls.reset.addEventListener('click', (event) => {
     event.stopPropagation();
     state.frac = { x: 0, y: 0, w: 1, h: 1 };
-    setWidgetValue(lockWidget, false);
-    setWidgetValue(aspectWidget, 'free');
+    state.ratioLock = null;
+    programmatic(lockWidget, false);
+    programmatic(aspectWidget, 'free');
     persist();
     refreshLayoutSize();
     layout();
+    syncCoords();
   });
+
+  function renderHelp() {
+    const t = labels();
+    helpBox.textContent = '';
+    const title = document.createElement('b');
+    title.textContent = t.helpTitle;
+    helpBox.appendChild(title);
+    for (const line of t.help) {
+      const row = document.createElement('div');
+      row.textContent = `• ${line}`;
+      helpBox.appendChild(row);
+    }
+    helpBtn.title = t.helpTitle;
+  }
+
+  let helpPinned = false;
+  helpBtn.addEventListener('mouseenter', () => {
+    helpBox.style.display = 'block';
+  });
+  helpBtn.addEventListener('mouseleave', () => {
+    if (!helpPinned) helpBox.style.display = 'none';
+  });
+  helpBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    helpPinned = !helpPinned;
+    helpBox.style.display = helpPinned ? 'block' : 'none';
+  });
+  helpBox.addEventListener('pointerdown', (event) => event.stopPropagation());
 
   function widgetIdFor(widget) {
     const graphId = node.graph?.id ?? app?.rootGraph?.id;
@@ -943,6 +1134,21 @@ function createEditor(node, widget) {
     return true;
   }
 
+  // Запись значения БЕЗ вызова callback'а: для полей координат это обязательно
+  // (иначе каждый кадр drag'а перезапускает ноду).
+  function setWidgetValueQuiet(widget, value) {
+    if (!widget || widget.value === value) return false;
+    widget.value = value;
+    const id = widgetIdFor(widget);
+    try {
+      widgetStore()?.setValue?.(id, value);
+    } catch {
+      /* ignore store mismatch */
+    }
+    node.setDirtyCanvas?.(true, true);
+    return true;
+  }
+
   // Язык берётся из Comfy.Locale при создании ноды и переприменяется при смене
   // настройки — без перезапуска ComfyUI. Значения combo (протокол) не трогаем.
   function applyLanguage() {
@@ -955,6 +1161,7 @@ function createEditor(node, widget) {
       }
     }
     empty.textContent = t.empty;
+    renderHelp();
     setOptionLabels(aspectWidget, t.aspect);
     setOptionLabels(fillWidget, t.fill);
     if (lockWidget) {
@@ -987,7 +1194,21 @@ function createEditor(node, widget) {
     const original = aspectWidget.callback;
     aspectWidget.callback = (...args) => {
       const result = original.apply(aspectWidget, args);
-      applyAspect();
+      if (state.suppress) {
+        layout();
+        return result;
+      }
+      if (aspectWidget.value === 'free') {
+        // «Свободные» снимает фиксацию: рамка остаётся как есть.
+        state.ratioLock = null;
+        programmatic(lockWidget, false);
+      } else {
+        // Выбор пресета применяет его и включает «Зафиксировано».
+        state.ratioLock = null;
+        programmatic(lockWidget, true);
+        applyAspect();
+      }
+      layout();
       return result;
     };
   }
@@ -995,8 +1216,31 @@ function createEditor(node, widget) {
     const original = lockWidget.callback;
     lockWidget.callback = (...args) => {
       const result = original.apply(lockWidget, args);
-      if (lockWidget.value) applyAspect();
-      else layout();
+      if (state.suppress) {
+        layout();
+        return result;
+      }
+      if (lockWidget.value) {
+        // Фиксируем ТЕКУЩИЕ пропорции рамки; пресет из списка имеет приоритет.
+        state.ratioLock = ratio() ? null : currentPxRatio();
+      } else {
+        state.ratioLock = null;
+        programmatic(aspectWidget, 'free');
+      }
+      layout();
+      return result;
+    };
+  }
+
+  // Поля координат — обратная связь: пользователь задал X/Y → рамка едет.
+  for (const widget of [centerXWidget, centerYWidget]) {
+    if (!widget?.callback) continue;
+    const original = widget.callback;
+    widget.callback = (...args) => {
+      const result = original.apply(widget, args);
+      if (state.suppress) return result;
+      if (widget === centerXWidget) applyCoords(args[0], centerYWidget?.value);
+      else applyCoords(centerXWidget?.value, args[0]);
       return result;
     };
   }
@@ -1044,7 +1288,9 @@ function createEditor(node, widget) {
       watchSource();
       loadSource({ force: true });
       if (locked() && ratio() && state.img) applyAspect();
+      else if (locked() && state.img) state.ratioLock = currentPxRatio();
       layout();
+      syncCoords();
     });
     return result;
   };
@@ -1086,6 +1332,11 @@ function createEditor(node, widget) {
     layout,
     setFrac,
     state,
+    centerX: centerXWidget,
+    centerY: centerYWidget,
+    helpBox,
+    helpBtn,
+    syncCoords,
   };
 }
 
