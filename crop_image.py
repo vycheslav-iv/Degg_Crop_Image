@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import torch
 import torch.nn.functional as F
@@ -108,19 +109,49 @@ def snap(value: float, multiplicity: int) -> int:
     return max(step, py_round(value / step) * step)
 
 
+def parse_output_size(raw: str) -> tuple[int, int] | None:
+    """Parse a manual result size ``"W,H"`` (empty = derive from megapixels)."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    parts = [p for p in re.split(r"[,x\s]+", text) if p]
+    if len(parts) < 2:
+        return None
+    try:
+        width = int(round(float(parts[0])))
+        height = int(round(float(parts[1])))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
 def output_size(
-    rect_w: float, rect_h: float, megapixels: float, multiplicity: int
+    rect_w: float,
+    rect_h: float,
+    megapixels: float,
+    multiplicity: int,
+    manual: tuple[int, int] | None = None,
 ) -> tuple[int, int]:
     """Target resolution for the frame, same maths as ComfyUI ResolutionSelector.
 
     1 MP is counted as 1024*1024 px and each side is rounded to the nearest
     multiple independently (``round``), exactly like ``nodes_resolution.py``,
     so the same ratio/MP/multiple gives the same numbers in both nodes.
+
+    ``manual`` is the size typed by the user: it wins over the megapixel
+    target and is only rounded to the multiplicity.
     """
+    step = max(1, int(multiplicity))
+    if manual is not None:
+        width = max(step, py_round(manual[0] / step) * step)
+        height = max(step, py_round(manual[1] / step) * step)
+        return int(width), int(height)
+
     rect_w = max(float(rect_w), MIN_FRACTION)
     rect_h = max(float(rect_h), MIN_FRACTION)
     mp = max(float(megapixels), 1e-4)
-    step = max(1, int(multiplicity))
 
     ratio = rect_w / rect_h
     total_pixels = mp * 1024.0 * 1024.0
@@ -220,6 +251,7 @@ def render_frames(
     resample: str,
     megapixels: float = 2.0,
     multiplicity: int = 8,
+    manual_size: tuple[int, int] | None = None,
 ):
     """Render the frame for every image in the batch.
 
@@ -230,7 +262,7 @@ def render_frames(
     batch = int(image.shape[0])
     _, src_h, src_w, src_c = (int(v) for v in image.shape[:4])
     out_w, out_h = output_size(
-        rect["w"] * src_w, rect["h"] * src_h, megapixels, multiplicity
+        rect["w"] * src_w, rect["h"] * src_h, megapixels, multiplicity, manual_size
     )
     has_alpha = src_c >= 4 or mask is not None or fill == "transparent"
     channels = 4 if has_alpha else 3
@@ -384,6 +416,15 @@ class DeggCropImage:
                     },
                 ),
                 "crop_rect": ("STRING", HIDDEN_OPTIONS),
+                "output_size": (
+                    "STRING",
+                    {
+                        "hidden": True,
+                        "advanced": True,
+                        "tooltip": "Internal: manual result size 'W,H' in pixels, "
+                        "written by the node UI. Empty = size is derived from megapixels.",
+                    },
+                ),
             },
             "optional": {
                 "mask": (
@@ -426,6 +467,7 @@ class DeggCropImage:
         resample="lanczos",
         fill="transparent",
         crop_rect="",
+        output_size="",
         mask=None,
     ):
         if image is None or int(getattr(image, "shape", (0,))[0] or 0) == 0:
@@ -444,6 +486,7 @@ class DeggCropImage:
             method,
             float(megapixels),
             int(multiplicity),
+            parse_output_size(output_size),
         )
         return (out, out_mask, int(width), int(height))
 

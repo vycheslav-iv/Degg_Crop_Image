@@ -469,6 +469,12 @@ check(
     {"frame_w": types["required"]["frame_w"][1], "frame_h": types["required"]["frame_h"][1]},
 )
 check(
+    "output_size — скрытый STRING (ручной размер результата)",
+    types["required"]["output_size"][0] == "STRING"
+    and types["required"]["output_size"][1].get("hidden") is True,
+    types["required"]["output_size"],
+)
+check(
     "center_x/center_y — INT со знаком (смещение в пикселях)",
     types["required"]["center_x"][0] == "INT"
     and types["required"]["center_y"][0] == "INT"
@@ -497,7 +503,7 @@ EXPECTED_WIDGET_ORDER = [
     "fill",
     "dim_outside",
 ]
-order = [k for k in types["required"] if k not in ("image", "crop_rect")]
+order = [k for k in types["required"] if k not in ("image", "crop_rect", "output_size")]
 check("порядок виджетов", order == EXPECTED_WIDGET_ORDER, order)
 check("RETURN_TYPES", mod.DeggCropImage.RETURN_TYPES == ("IMAGE", "MASK", "INT", "INT"))
 check("mapping registered", mod.NODE_CLASS_MAPPINGS.get("DeggCropImage") is mod.DeggCropImage)

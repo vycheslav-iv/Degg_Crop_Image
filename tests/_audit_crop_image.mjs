@@ -60,6 +60,7 @@ const EXPECTED = [
   "fill",
   "dim_outside",
   "crop_rect",
+  "output_size",
 ];
 check("Python: набор входов", inputNames.join(",") === EXPECTED.join(","), inputNames.join(","));
 check("Python: crop_rect — скрытый STRING", /"crop_rect":\s*\("STRING",\s*HIDDEN_OPTIONS\)/.test(PY));
@@ -333,26 +334,48 @@ check(
     /"frame_h":\s*\(\s*"INT"/.test(PY),
 );
 check(
-  "JS: размер рамки считается в пикселях источника (frameWithSize)",
-  /export function frameWithSize\(/.test(JS) &&
-    /frameWithSize\(state\.frac, state\.img\.w, state\.img\.h, size, axis, effectiveRatio\(\)\)/.test(JS),
+  "JS: итоговый размер результата (ручной или по мегапикселям)",
+  /export function outputSizeFor\(/.test(JS) &&
+    /export function snapSize\(/.test(JS) &&
+    /function currentOutput\(\)[\s\S]{0,300}?outputSizeFor\(/.test(JS),
+);
+check(
+  "JS: плашка показывает ИТОГОВЫЙ размер (а не размер кадра)",
+  /function layoutBadge\(r\)[\s\S]{0,200}?const out = currentOutput\(\)/.test(JS),
 );
 check(
   "JS: размер пишется в нативные виджеты тихо (frame_w/frame_h)",
   /widgetByName\(node,\s*'frame_w'\)/.test(JS) &&
     /widgetByName\(node,\s*'frame_h'\)/.test(JS) &&
-    /setWidgetValueQuiet\(frameWWidget, Math\.round\(r\.w\)\)/.test(JS) &&
-    /setWidgetValueQuiet\(frameHWidget, Math\.round\(r\.h\)\)/.test(JS),
+    /setWidgetValueQuiet\(frameWWidget, out\.w\)/.test(JS) &&
+    /setWidgetValueQuiet\(frameHWidget, out\.h\)/.test(JS),
 );
 check(
-  "JS: правка размера двигает рамку (applySize → frameWithSize)",
-  /function applySize\([\s\S]{0,400}?frameWithSize\(/.test(JS) &&
+  "JS: правка размера задаёт итоговый размер и подгоняет пропорции кадра",
+  /function applySize\([\s\S]{0,900}?snapSize\(/.test(JS) &&
+    /function applySize\([\s\S]{0,900}?frameWithRatio\(/.test(JS) &&
     /widget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,600}?applySize\(axis,/.test(JS),
 );
 check(
-  "JS: мегапиксели НЕ отключаются при ручном размере (размер выхода = MP + пропорции)",
-  !/megapixelsWidget\.disabled\s*=\s*true/.test(JS) &&
-    !/mpWidget\.disabled\s*=\s*true/.test(JS),
+  "JS: ручной размер хранится в скрытом output_size и переживает перезагрузку",
+  /widgetByName\(node,\s*'output_size'\)/.test(JS) &&
+    /function writeManual\(\)[\s\S]{0,400}?outputSizeWidget/.test(JS) &&
+    /function readManual\(\)/.test(JS) &&
+    /readManual\(\);/.test(JS),
+);
+check(
+  "JS: правка мегапикселей возвращает режим «по мегапикселям»",
+  /mpWidget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,300}?clearManual\(\)/.test(JS),
+);
+check(
+  "JS: в ручном режиме мегапиксели показывают эквивалент результата",
+  /function syncMpToManual\(\)[\s\S]{0,300}?1024 \* 1024/.test(JS),
+);
+check(
+  "Python: ручной размер результата учитывается при расчёте",
+  /def output_size\([\s\S]{0,400}?manual: tuple\[int, int\] \| None = None/.test(PY) &&
+    /if manual is not None:/.test(PY) &&
+    /parse_output_size\(output_size\)/.test(PY),
 );
 
 // ── Итог ───────────────────────────────────────────────────────────────────

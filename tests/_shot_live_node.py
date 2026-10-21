@@ -160,6 +160,17 @@ async def main() -> int:
                     break
                 await asyncio.sleep(0.6)
             await asyncio.sleep(1.5)
+            # Ручной размер результата: 1000 × 1000 px (сценарий пользователя).
+            await evaluate(
+                "(() => { const crop = window.__probeCrop;"
+                " const w = crop.widgets.find((x) => x.name === 'frame_w');"
+                " const h = crop.widgets.find((x) => x.name === 'frame_h');"
+                " if (!w || !h) return false;"
+                " w.value = 1000; w.callback && w.callback(1000, app.canvas, crop);"
+                " h.value = 1000; h.callback && h.callback(1000, app.canvas, crop);"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.8)
             await evaluate("app.canvas.setDirty(true, true)")
             await asyncio.sleep(0.8)
 

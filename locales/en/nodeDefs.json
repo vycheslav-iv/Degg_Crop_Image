@@ -20,12 +20,12 @@
         "tooltip": "Vertical offset of the frame centre from the image centre, in pixels."
       },
       "frame_w": {
-        "name": "Frame width, px",
-        "tooltip": "Width of the crop region in source pixels. 0 keeps the current frame size."
+        "name": "Result width, px",
+        "tooltip": "Final width of the result in pixels. The frame proportions follow it, megapixels show the equivalent value."
       },
       "frame_h": {
-        "name": "Frame height, px",
-        "tooltip": "Height of the crop region in source pixels. 0 keeps the current frame size."
+        "name": "Result height, px",
+        "tooltip": "Final height of the result in pixels. The frame proportions follow it, megapixels show the equivalent value."
       },
       "aspect_ratio": {
         "name": "Aspect ratio",
@@ -54,6 +54,10 @@
       "fill": {
         "name": "Fill outside",
         "tooltip": "Color of the area outside the source image."
+      },
+      "output_size": {
+        "name": "Result size",
+        "tooltip": "Internal: manual result size 'W,H' in pixels, written by the node UI."
       },
       "crop_rect": {
         "name": "Crop rectangle",
