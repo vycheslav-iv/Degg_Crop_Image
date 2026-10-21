@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Предохранитель: не даёт закоммитить красное состояние рабочей папки.
+# Установка и обход — в _process/PROCESS.md, раздел 11.2 (обход: git commit --no-verify).
+# ВАЖНО: копия должна быть исполняемой — chmod +x, иначе git молча её пропустит.
+set -e
+
+# Ищем check.py вверх по дереву: сначала служебная папка, потом корень.
+runner=""; dir="$(pwd)"
+while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+  for cand in "$dir/_process/check.py" "$dir/check.py"; do
+    if [ -f "$cand" ]; then runner="$cand"; break; fi
+  done
+  [ -n "$runner" ] && break
+  dir="$(dirname "$dir")"
+done
+if [ -z "$runner" ]; then echo "[hook] check.py не найден — проверки пропущены"; exit 0; fi
+
+PY_BIN="$(command -v python || command -v py || command -v python3 || true)"
+if [ -z "$PY_BIN" ]; then echo "[hook] python не найден — проверки пропущены"; exit 0; fi
+
+# Проверяем проекты этого репозитория — сам он или вложенные (cd не нужен:
+# check.py сам находит корень рабочей папки)
+repo_root="$(git rev-parse --show-toplevel)"
+set +e
+"$PY_BIN" "$runner" --under "$repo_root"; rc=$?
+if [ "$rc" -eq 2 ]; then
+  # в репозитории проектов не нашлось — проверяем всю рабочую папку
+  "$PY_BIN" "$runner"; rc=$?
+fi
+set -e
+if [ "$rc" -ne 0 ]; then
+  echo
+  echo "Коммит остановлен: проверки красные. Починить или (осознанно) git commit --no-verify"
+  exit 1
+fi
