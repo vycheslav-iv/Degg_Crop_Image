@@ -48,13 +48,13 @@ const required = PY.slice(PY.indexOf('"required": {'), PY.indexOf('"optional": {
 const inputNames = [...required.matchAll(/^ {16}"?([a-z_]+)"?:\s*\(/gm)].map((m) => m[1]);
 const EXPECTED = [
   "image",
-  "aspect_ratio",
   "lock_ratio",
-  "dim_outside",
-  "multiplicity",
+  "aspect_ratio",
   "megapixels",
+  "multiplicity",
   "resample",
   "fill",
+  "dim_outside",
   "crop_rect",
 ];
 check("Python: набор входов", inputNames.join(",") === EXPECTED.join(","), inputNames.join(","));
@@ -64,7 +64,7 @@ check("Python: crop_rect по умолчанию полный кадр", /DEFAUL
 check("Python: mask — необязательный MASK", /"mask":\s*\(\s*"MASK"/.test(PY));
 check("Python: lock_ratio по умолчанию включён", /"lock_ratio":[\s\S]{0,120}?"default":\s*True/.test(PY));
 check("Python: dim_outside 0..100", /"dim_outside":[\s\S]{0,160}?"max":\s*100/.test(PY));
-const multBlock = PY.slice(PY.indexOf('"multiplicity":'), PY.indexOf('"megapixels":'));
+const multBlock = PY.slice(PY.indexOf('"multiplicity":'), PY.indexOf('"resample":'));
 check("Python: кратность 8..128 шагом 4 (как ResolutionSelector)", /"min":\s*8,/.test(multBlock) && /"max":\s*128,/.test(multBlock) && /"step":\s*4,/.test(multBlock));
 const mpBlock = PY.slice(PY.indexOf('"megapixels":'), PY.indexOf('"resample":'));
 check(

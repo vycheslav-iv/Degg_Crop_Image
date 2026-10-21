@@ -298,6 +298,22 @@ async def main() -> int:
             check("до соединения src пустой", before.get("src") == "", before.get("src"))
             check("до соединения видна подсказка", bool(before.get("emptyVisible")))
 
+            # Порядок виджетов на теле ноды (снизу вверх в UI — как в INPUT_TYPES).
+            order = await cdp.eval(
+                "(() => (window.__probeCrop.widgets || []).map((w) => w.name)"
+                ".filter((n) => n !== 'preview' && n !== 'crop_rect'))()"
+            )
+            expected_order = [
+                "lock_ratio",
+                "aspect_ratio",
+                "megapixels",
+                "multiplicity",
+                "resample",
+                "fill",
+                "dim_outside",
+            ]
+            check("порядок виджетов как в задании", order == expected_order, order)
+
             await cdp.eval(
                 "(() => { const c = window.__probeCrop, l = window.__probeLoad;"
                 " return l.connect(0, c, 0); })()"

@@ -26,15 +26,19 @@
 | Вход | Тип | По умолчанию | Смысл |
 |------|-----|--------------|-------|
 | `image` | IMAGE | — | источник (батч `[B,H,W,C]`) |
-| `aspect_ratio` | COMBO | `free` | протокол: `free,1:1,2:3,3:2,4:3,3:4,16:9,9:16,21:9` |
 | `lock_ratio` | BOOLEAN | `true` | удерживать пропорцию при перетаскивании |
-| `dim_outside` | INT 0…100 | `50` | затемнение вне рамки, только отображение |
-| `multiplicity` | INT 8…128, step 4 | `8` | кратность сторон результата |
+| `aspect_ratio` | COMBO | `free` | протокол: `free,1:1,2:3,3:2,4:3,3:4,16:9,9:16,21:9` |
 | `megapixels` | FLOAT 0.1…64 | `2.0` | целевая площадь, 1 MP = 1024² |
+| `multiplicity` | INT 8…128, step 4 | `8` | кратность сторон результата |
 | `resample` | COMBO | `lanczos` | `lanczos,bicubic,bilinear,nearest-exact` (без перевода) |
 | `fill` | COMBO | `transparent` | `transparent,black,white,gray` — фон вне источника |
+| `dim_outside` | INT 0…100 | `50` | затемнение вне рамки, только отображение |
 | `mask` | MASK (опц.) | — | заменяет альфу источника (1 = непрозрачно) |
 | `crop_rect` | STRING (скрыт) | полный кадр | `{x, y, w, h}` в долях изображения |
+
+Порядок строк таблицы = порядок виджетов на теле ноды (после превью): `lock_ratio`,
+`aspect_ratio`, `megapixels`, `multiplicity`, `resample`, `fill`, `dim_outside`.
+`image`/`mask` — сокеты, `crop_rect` скрыт.
 
 COMBO-значения — протокол: подписи меняются через `getOptionLabel`, значения в
 workflow не переводятся.
@@ -135,3 +139,7 @@ python _process/check.py Degg_Crop_Image   # из корня бандла
 `tests/_probe_live_dom_crop_image.py` — вторая проверяет ОБА канала смены входа:
 legacy (`onWidgetChanged`) и Nodes 2.0 (`widget.callback` без `onWidgetChanged`),
 плюс перезаливку файла с тем же именем.
+
+Порядок виджетов проверяется дважды: `_test_crop_image.py` (ключи `INPUT_TYPES`) и
+`_probe_live_dom_crop_image.py` (`node.widgets` живого узла) — оба сверяются со списком
+из §2. Статический аудит держит тот же список (`EXPECTED`).

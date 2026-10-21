@@ -455,6 +455,18 @@ check("mask is optional MASK", types["optional"]["mask"][0] == "MASK")
 check("lanczos is the default resample", types["required"]["resample"][1]["default"] == "lanczos")
 check("lock_ratio default on", types["required"]["lock_ratio"][1]["default"] is True)
 check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom_nodes/Image")
+# Порядок виджетов на теле ноды = порядок ключей INPUT_TYPES.
+EXPECTED_WIDGET_ORDER = [
+    "lock_ratio",
+    "aspect_ratio",
+    "megapixels",
+    "multiplicity",
+    "resample",
+    "fill",
+    "dim_outside",
+]
+order = [k for k in types["required"] if k not in ("image", "crop_rect")]
+check("порядок виджетов", order == EXPECTED_WIDGET_ORDER, order)
 check("RETURN_TYPES", mod.DeggCropImage.RETURN_TYPES == ("IMAGE", "MASK", "INT", "INT"))
 check("mapping registered", mod.NODE_CLASS_MAPPINGS.get("DeggCropImage") is mod.DeggCropImage)
 

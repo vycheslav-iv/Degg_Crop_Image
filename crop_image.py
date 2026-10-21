@@ -282,13 +282,6 @@ class DeggCropImage:
         return {
             "required": {
                 "image": ("IMAGE", {"tooltip": "Source image batch."}),
-                "aspect_ratio": (
-                    ASPECT_RATIOS,
-                    {
-                        "default": "free",
-                        "tooltip": "Frame aspect ratio. Inactive while Lock Ratio is off.",
-                    },
-                ),
                 "lock_ratio": (
                     "BOOLEAN",
                     {
@@ -298,23 +291,11 @@ class DeggCropImage:
                         "tooltip": "Keep the selected aspect ratio while dragging.",
                     },
                 ),
-                "dim_outside": (
-                    "INT",
+                "aspect_ratio": (
+                    ASPECT_RATIOS,
                     {
-                        "default": 50,
-                        "min": 0,
-                        "max": 100,
-                        "tooltip": "Display only: darken the area outside the frame.",
-                    },
-                ),
-                "multiplicity": (
-                    "INT",
-                    {
-                        "default": 8,
-                        "min": 8,
-                        "max": 128,
-                        "step": 4,
-                        "tooltip": "Nearest multiple of the result to set the selected resolution to.",
+                        "default": "free",
+                        "tooltip": "Frame aspect ratio. Inactive while Lock Ratio is off.",
                     },
                 ),
                 "megapixels": (
@@ -325,6 +306,16 @@ class DeggCropImage:
                         "max": 64.0,
                         "step": 0.1,
                         "tooltip": "Target output area in megapixels (1 MP = 1,000,000 px).",
+                    },
+                ),
+                "multiplicity": (
+                    "INT",
+                    {
+                        "default": 8,
+                        "min": 8,
+                        "max": 128,
+                        "step": 4,
+                        "tooltip": "Nearest multiple of the result to set the selected resolution to.",
                     },
                 ),
                 "resample": (
@@ -339,6 +330,15 @@ class DeggCropImage:
                     {
                         "default": "transparent",
                         "tooltip": "Color of the area outside the source image.",
+                    },
+                ),
+                "dim_outside": (
+                    "INT",
+                    {
+                        "default": 50,
+                        "min": 0,
+                        "max": 100,
+                        "tooltip": "Display only: darken the area outside the frame.",
                     },
                 ),
                 "crop_rect": ("STRING", HIDDEN_OPTIONS),
