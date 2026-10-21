@@ -91,7 +91,16 @@ step = max(1, int(multiplicity))
 - `computeLayoutSize` возвращает `minHeight`, высота = ширина × соотношение +
   плашка (без `scrollHeight`/`offsetHeight`/`computeSize`);
 - превью источника берётся по проводу мгновенно (`p:/o:/i:/n:`), без выполнения
-  воркфлоу;
+  воркфлоу; смена изображения в upstream-ноде (загрузка в `LoadImage`) приходит
+  ДВУМЯ каналами: legacy (`BaseWidget.setValue`, upload-виджет) зовёт
+  `source.onWidgetChanged`, Nodes 2.0 (`createWidgetUpdateHandler`) зовёт только
+  `widget.callback` и `node.onWidgetChanged` не вызывает. Поэтому обёрнуты оба
+  канала: `watchedHandler` на хуке узла и `watchSourceWidgets()` на callback'ах
+  виджетов источника (с восстановлением в `detachSource()`);
+- смена картинки определяется подменой объекта `app.nodeOutputs[locator]`
+  (`sourceOutputsChanged()`), а не ключом/именем файла: перезаливка файла с тем
+  же именем не меняет ключ, но `setOutputsByLocatorId` всегда присваивает новый
+  объект → принудительный `loadSource({ force: true })` с кэш-бастером;
 - зум/пан графа не влияют на координаты: экранные координаты приводятся к
   локальным через `getBoundingClientRect`;
 - изменения виджетов (`dim_outside`, `fill`, `megapixels`, `multiplicity`)
@@ -123,4 +132,6 @@ python _process/check.py Degg_Crop_Image   # из корня бандла
 ```
 
 Живые пробы (нужен запущенный ComfyUI): `tests/_probe_live_crop_image.py`,
-`tests/_probe_live_dom_crop_image.py`.
+`tests/_probe_live_dom_crop_image.py` — вторая проверяет ОБА канала смены входа:
+legacy (`onWidgetChanged`) и Nodes 2.0 (`widget.callback` без `onWidgetChanged`),
+плюс перезаливку файла с тем же именем.

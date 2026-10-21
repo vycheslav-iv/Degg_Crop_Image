@@ -543,6 +543,65 @@ async def main() -> int:
                 tall.get("rootBox"),
             )
 
+            # Смена изображения в upstream-ноде (загрузка файла в LoadImage):
+            # фронтенд пишет app.nodeOutputs и зовёт node.onWidgetChanged —
+            # превью обязано обновиться без запуска воркфлоу (как у нативной
+            # ноды кадрирования).
+            await cdp.eval(
+                "(() => { const l = window.__probeLoad;"
+                " const w = (l.widgets || []).find((x) => x.name === 'image');"
+                " const prev = w.value; w.value = '01.webp';"
+                " app.nodeOutputs[String(l.id)] = { images: [{ filename: '01.webp', subfolder: '', type: 'input' }] };"
+                " if (l.onWidgetChanged) l.onWidgetChanged('image', '01.webp', prev, w);"
+                " return w.value; })()"
+            )
+            await asyncio.sleep(1.0)
+            refreshed = await cdp.eval(STATE_JS)
+            check(
+                "смена изображения upstream обновляет превью",
+                "01.webp" in (refreshed.get("src") or ""),
+                refreshed.get("src"),
+            )
+
+            # Nodes 2.0 (createWidgetUpdateHandler) зовёт ТОЛЬКО widget.callback
+            # источника и не зовёт node.onWidgetChanged — превью обязано
+            # обновиться и по этому каналу.
+            vue_path = await cdp.eval(
+                "(() => { const l = window.__probeLoad;"
+                " const w = (l.widgets || []).find((x) => x.name === 'image');"
+                " const prev = w.value; w.value = 'example.png';"
+                " app.nodeOutputs[String(l.id)] = { images: [{ filename: 'example.png', subfolder: '', type: 'input' }] };"
+                " if (typeof w.callback === 'function') w.callback(w.value, app.canvas, l);"
+                " return { prev, next: w.value, hasCallback: typeof w.callback === 'function' }; })()"
+            )
+            await asyncio.sleep(1.0)
+            vue_state = await cdp.eval(STATE_JS)
+            check(
+                "Nodes 2.0: смена картинки через widget.callback обновляет превью",
+                bool(vue_path.get("hasCallback"))
+                and "example.png" in (vue_state.get("src") or ""),
+                {"path": vue_path, "src": vue_state.get("src")},
+            )
+
+            # Перезаливка файла с тем же именем не меняет ключ превью — картинку
+            # всё равно надо перечитать (кэш-бастер), иначе остаётся старая.
+            same_before = vue_state.get("src") or ""
+            await cdp.eval(
+                "(() => { const l = window.__probeLoad;"
+                " const w = (l.widgets || []).find((x) => x.name === 'image');"
+                " w.value = 'example.png';"
+                " app.nodeOutputs[String(l.id)] = { images: [{ filename: 'example.png', subfolder: '', type: 'input' }] };"
+                " if (typeof w.callback === 'function') w.callback(w.value, app.canvas, l);"
+                " return 1; })()"
+            )
+            await asyncio.sleep(1.0)
+            same_state = await cdp.eval(STATE_JS)
+            check(
+                "перезаливка того же имени файла перечитывает картинку",
+                bool(same_before) and (same_state.get("src") or "") != same_before,
+                {"before": same_before, "after": same_state.get("src")},
+            )
+
             errors = await cdp.eval("window.__probeErrors")
             real = [e for e in (errors or []) if "example.png" not in e and "favicon" not in e]
             check("консоль без ошибок", not real, real[:3])

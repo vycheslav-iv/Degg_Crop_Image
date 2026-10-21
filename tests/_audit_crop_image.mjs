@@ -180,6 +180,35 @@ for (const key of pyRatioKeys) {
   check(`JS: подпись пропорции "${key}" не меняет значение`, labelBlock.includes(`'${key}':`));
 }
 
+// Превью обязано реагировать на смену изображения в upstream-ноде: загрузка
+// в LoadImage пишет app.nodeOutputs[key] и зовёт node.onWidgetChanged, поэтому
+// редактор должен подписаться на этот хук источника.
+check(
+  "JS: подписка на смену виджета upstream (onWidgetChanged)",
+  /watchedSource\.onWidgetChanged\s*=\s*watchedHandler/.test(JS),
+);
+check(
+  "JS: смена входа перерисовывает превью принудительно",
+  /loadSource\(\{\s*force:\s*true\s*\}\)/.test(JS),
+);
+// Nodes 2.0 обновляет виджет через createWidgetUpdateHandler: зовёт
+// widget.callback, но НЕ node.onWidgetChanged, поэтому подписки на хук мало —
+// callback'и виджетов источника обязаны быть обёрнуты.
+check(
+  "JS: Nodes 2.0 — превью реагирует на widget.callback upstream",
+  /widget\.callback\s*=\s*wrapper/.test(JS) &&
+    /watchedWidgets\.push\(\{\s*widget,\s*original,\s*wrapper\s*\}\)/.test(JS),
+);
+check(
+  "JS: watchSource подключает обёртку callback'ов источника",
+  /function watchSource\(\)[\s\S]*?watchSourceWidgets\(source\);/.test(JS),
+);
+check(
+  "JS: перезаливка файла с тем же именем перерисовывает превью",
+  /loadSource\(\{\s*force:\s*sourceOutputsChanged\(\)\s*\}\)/.test(JS) &&
+    /const\s+changed\s*=\s*next\s*!==\s*watchedOutputs/.test(JS),
+);
+
 // ── Итог ───────────────────────────────────────────────────────────────────
 console.log("");
 console.log(`ok: ${oks.length}   FAIL: ${problems.length}`);

@@ -622,10 +622,93 @@ function createEditor(node, widget) {
     state.frac = parseRectFrac(cropWidget.value);
   }
 
-  function loadSource({ retry = true } = {}) {
+  // LoadImage после выбора/загрузки файла пишет app.nodeOutputs[key]. Событие
+  // приходит по-разному: legacy зовёт source.onWidgetChanged, Nodes 2.0 зовёт
+  // только widget.callback (createWidgetUpdateHandler). Слушаем оба канала,
+  // иначе в новом UI превью остаётся от прошлой картинки.
+  let watchedSource = null;
+  let watchedPrev = null;
+  let watchedHandler = null;
+  let watchedWidgets = [];
+  let watchedOutputs = null;
+
+  function detachSource() {
+    if (watchedSource && watchedHandler && watchedSource.onWidgetChanged === watchedHandler) {
+      watchedSource.onWidgetChanged = watchedPrev || undefined;
+    }
+    for (const entry of watchedWidgets) {
+      if (entry.widget.callback === entry.wrapper) {
+        if (entry.original) entry.widget.callback = entry.original;
+        else delete entry.widget.callback;
+      }
+    }
+    watchedSource = null;
+    watchedPrev = null;
+    watchedHandler = null;
+    watchedWidgets = [];
+    watchedOutputs = null;
+  }
+
+  function outputsRef() {
+    const source = upstreamNode(node);
+    if (!source) return null;
+    const key = locatorIdFor(source);
+    return key ? app?.nodeOutputs?.[key] ?? null : null;
+  }
+
+  // Настоящая смена картинки = подменился объект app.nodeOutputs (даже если имя
+  // файла то же). Остальные виджеты upstream превью не трогают.
+  function sourceOutputsChanged() {
+    const next = outputsRef();
+    const changed = next !== watchedOutputs;
+    watchedOutputs = next;
+    return changed;
+  }
+
+  function noteSourceChanged() {
+    requestAnimationFrame(() => loadSource({ force: sourceOutputsChanged() }));
+  }
+
+  function bindingsIntact() {
+    if (watchedSource && watchedSource.onWidgetChanged !== watchedHandler) return false;
+    return watchedWidgets.every((entry) => entry.widget.callback === entry.wrapper);
+  }
+
+  function watchSourceWidgets(source) {
+    for (const widget of source.widgets || []) {
+      if (!widget || typeof widget.callback !== 'function') continue;
+      const original = widget.callback;
+      const wrapper = function () {
+        const result = original.apply(this, arguments);
+        noteSourceChanged();
+        return result;
+      };
+      widget.callback = wrapper;
+      watchedWidgets.push({ widget, original, wrapper });
+    }
+  }
+
+  function watchSource() {
+    const source = upstreamNode(node);
+    if (source === watchedSource && bindingsIntact()) return;
+    detachSource();
+    if (!source) return;
+    watchedSource = source;
+    watchedPrev = source.onWidgetChanged;
+    watchedHandler = function () {
+      const result = watchedPrev?.apply(this, arguments);
+      noteSourceChanged();
+      return result;
+    };
+    watchedSource.onWidgetChanged = watchedHandler;
+    watchedOutputs = outputsRef();
+    watchSourceWidgets(source);
+  }
+
+  function loadSource({ retry = true, force = false } = {}) {
     const { key, url } = previewFor(node);
     const nextKey = url ? key : '';
-    if (nextKey === state.key) return;
+    if (!force && nextKey === state.key) return;
     state.key = nextKey;
 
     if (!url) {
@@ -667,7 +750,7 @@ function createEditor(node, widget) {
         requestAnimationFrame(() => loadSource({ retry: false }));
       }
     };
-    image.src = url;
+    image.src = force ? `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}` : url;
   }
 
   function localFromEvent(event) {
@@ -861,7 +944,12 @@ function createEditor(node, widget) {
   node.onConnectionsChange = function (type, slot, connected, link, slotType) {
     const result = connections?.apply(this, arguments);
     const isInput = type === (window.LiteGraph?.INPUT ?? 1);
-    if (isInput && Number(slot) === 0) requestAnimationFrame(() => loadSource());
+    if (isInput && Number(slot) === 0) {
+      requestAnimationFrame(() => {
+        watchSource();
+        loadSource({ force: true });
+      });
+    }
     return result;
   };
 
@@ -870,7 +958,8 @@ function createEditor(node, widget) {
     const result = configure?.apply(this, arguments);
     readRect();
     requestAnimationFrame(() => {
-      loadSource();
+      watchSource();
+      loadSource({ force: true });
       if (locked() && ratio() && state.img) applyAspect();
       layout();
     });
@@ -880,7 +969,8 @@ function createEditor(node, widget) {
   readRect();
   refreshLayoutSize();
   requestAnimationFrame(() => {
-    loadSource();
+    watchSource();
+    loadSource({ force: true });
     layout();
   });
 
@@ -892,6 +982,7 @@ function createEditor(node, widget) {
   node.onRemoved = function () {
     api?.removeEventListener?.('executed', onExecuted);
     api?.removeEventListener?.('b_preview', onExecuted);
+    detachSource();
     return remove?.apply(this, arguments);
   };
 
