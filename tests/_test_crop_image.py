@@ -366,15 +366,26 @@ check("quarter size", (w, h) == (10, 10), (w, h))
 check("quarter first pixel from (10,10)", close(out[0, 0, 0, 0], 1100.0), out[0, 0, 0])
 check("quarter last pixel from (19,19)", close(out[0, 9, 9, 0], 2090.0), out[0, 9, 9])
 
-# Outpainting: transparent fill -> zero RGB and zero alpha outside.
+# Outpainting: transparent fill -> серый RGB (0.5) и нулевая альфа.
+# Раньше RGB был нулём, и превью без альфы показывало аутпейнт чёрным.
 pad = {"x": -0.5, "y": -0.5, "w": 2.0, "h": 2.0}
 out, mask, w, h = mod.render_frames(make_image(1, 10, 10), None, pad, "transparent", "bicubic", 0.0004, 1)
 check("pad size", (w, h) == (20, 20), (w, h))
-check("pad corner rgb zero", close(out[0, 0, 0, 0], 0) and close(out[0, 0, 0, 2], 0))
+check("pad corner rgb gray", close(out[0, 0, 0, 0], 0.5) and close(out[0, 0, 0, 2], 0.5), out[0, 0, 0])
 check("pad corner alpha zero", close(out[0, 0, 0, 3], 0.0))
-check("pad top-left is fill", close(out[0, 0, 0, 0], 0.0) and close(out[0, 4, 4, 0], 0.0))
+check("pad top-left is fill", close(out[0, 0, 0, 0], 0.5) and close(out[0, 4, 4, 0], 0.5))
 check("pad source starts at dst(5,5)", close(out[0, 5, 5, 0], 0.0) and close(out[0, 14, 14, 0], 990.0), out[0, 14, 14])
 check("pad mask zero outside", close(mask[0, 0, 0], 0.0) and close(mask[0, 10, 10], 1.0), mask[0, 10, 10])
+check(
+    "заливка transparent: цвет серый, альфа нулевая",
+    mod._fill_color("transparent", 4) == (0.5, 0.5, 0.5, 0.0),
+    mod._fill_color("transparent", 4),
+)
+check(
+    "заливка gray: цвет серый, альфа единичная",
+    mod._fill_color("gray", 4) == (0.5, 0.5, 0.5, 1.0),
+    mod._fill_color("gray", 4),
+)
 
 # Opaque fill: alpha 1, mask 1, chosen color outside.
 out, mask, w, h = mod.render_frames(make_image(1, 10, 10), None, pad, "black", "bicubic", 0.0004, 1)

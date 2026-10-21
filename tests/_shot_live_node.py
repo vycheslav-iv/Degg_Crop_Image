@@ -160,8 +160,15 @@ async def main() -> int:
                     break
                 await asyncio.sleep(0.6)
             await asyncio.sleep(1.5)
-            # Сценарий по умолчанию: картинка подключена → нода сбросилась под
-            # неё (рамка по всему изображению, результат = размер картинки).
+            # Сценарий: рамка выходит за пределы картинки (аутпейнт) при
+            # прозрачной заливке — видно и плашку, и заливку.
+            await evaluate(
+                "(() => { const crop = window.__probeCrop;"
+                " const cr = (crop.widgets || []).find((w) => w.name === 'crop_rect');"
+                " if (cr) cr.value = '{\"x\":-0.15,\"y\":-0.1,\"w\":1.3,\"h\":1.2}';"
+                " crop.__deggCrop.refresh();"
+                " return true; })()"
+            )
             await asyncio.sleep(2.0)
             await evaluate("app.canvas.setDirty(true, true)")
             await asyncio.sleep(0.8)

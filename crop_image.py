@@ -269,8 +269,10 @@ def render_frames(
 
     color = _fill_color(fill, channels)
     canvas = torch.zeros((batch, out_h, out_w, channels), dtype=torch.float32)
-    if fill != "transparent":
-        canvas[...] = torch.tensor(color)
+    # Канва заливается ЦВЕТОМ всегда, в том числе для 'transparent': у прозрачной
+    # заливки RGB = серый (0.5), альфа = 0. Раньше там были нули, и превью без
+    # альфы показывало аутпейнт ЧЁРНЫМ.
+    canvas[...] = torch.tensor(color)
 
     mask_out = torch.zeros((batch, out_h, out_w), dtype=torch.float32)
     if fill != "transparent":

@@ -881,7 +881,8 @@ function createEditor(node, widget) {
   function layoutBadge() {
     const out = resultSize();
     const megapixels = (out.w * out.h) / 1e6;
-    badge.textContent = `${out.w} × ${out.h} px\n${megapixels.toFixed(2)} MP`;
+    // Одна строка: размер и мегапиксели, разделённые отступом (шрифт моноширинный).
+    badge.textContent = `${out.w} × ${out.h} px   ${megapixels.toFixed(2)} MP`;
     badge.style.display = '';
   }
 
