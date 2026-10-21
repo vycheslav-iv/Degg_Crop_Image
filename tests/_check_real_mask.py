@@ -36,16 +36,8 @@ PROMPT = {
             "mask": ["1", 1],
             "crop_rect": json.dumps(CROP_RECT),
             "fill": "transparent",
-            # API требует все обязательные входы, включая «интерфейсные»
-            # (center_x/y, frame_w/h, aspect_ratio, lock_ratio, output_size) —
-            # они не влияют на результат, но должны присутствовать.
-            "center_x": 0,
-            "center_y": 0,
-            "frame_w": 0,
-            "frame_h": 0,
-            "aspect_ratio": "free",
-            "lock_ratio": True,
-            "output_size": "",
+            # «Интерфейсные» входы (center_x/y, frame_w/h, aspect_ratio,
+            # lock_ratio, output_size) — необязательные: API их не требует.
             "megapixels": 2.0,
             "multiplicity": 8,
             "resample": "lanczos",

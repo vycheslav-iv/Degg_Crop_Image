@@ -1491,6 +1491,166 @@ async def main() -> int:
                 cfrac,
             )
 
+            # Восстановление значений по ИМЕНАМ. Фронтенд восстанавливает
+            # значения виджетов позиционно, а порядок виджетов задаёт редактор,
+            # поэтому нода обязана выправлять их по именам — иначе старые воркфлои
+            # разъезжаются.
+            restored = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const named = { lock_ratio: true, center_x: 11, center_y: 22,"
+                "  frame_w: 333, frame_h: 444, aspect_ratio: '4:3',"
+                "  megapixels: 3.5, multiplicity: 16, resample: 'bicubic',"
+                "  fill: 'white', dim_outside: 25 };"
+                " const bogus = [999, 'broken', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];"
+                " try { n.onConfigure({ widgets_values: bogus, widgets_values_named: named }); }"
+                "  catch (e) { return { error: String(e) }; }"
+                " const g = (nm) => { const ww = (n.widgets || []).find((x) => x.name === nm);"
+                "  return ww ? ww.value : null; };"
+                " return { lock: g('lock_ratio'), cx: g('center_x'), cy: g('center_y'),"
+                "  fw: g('frame_w'), fh: g('frame_h'), aspect: g('aspect_ratio'),"
+                "  mp: g('megapixels'), mult: g('multiplicity'), resample: g('resample'),"
+                "  fill: g('fill'), dim: g('dim_outside') }; })()"
+            )
+            # Значение виджета применяется через store — асинхронно, поэтому
+            # читаем его на следующем кадре.
+            await asyncio.sleep(0.35)
+            restored = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const g = (nm) => { const w = (n.widgets || []).find((x) => x.name === nm);"
+                "  return w ? w.value : null; };"
+                " return { lock: g('lock_ratio'), cx: g('center_x'), cy: g('center_y'),"
+                "  fw: g('frame_w'), fh: g('frame_h'), aspect: g('aspect_ratio'),"
+                "  mp: g('megapixels'), mult: g('multiplicity'), resample: g('resample'),"
+                "  fill: g('fill'), dim: g('dim_outside') }; })()"
+            )
+            rv = (restored or {}).get("lock")
+            rv = {
+                "lock": (restored or {}).get("lock"),
+                "cx": (restored or {}).get("cx"),
+                "cy": (restored or {}).get("cy"),
+                "fw": (restored or {}).get("fw"),
+                "fh": (restored or {}).get("fh"),
+                "aspect": (restored or {}).get("aspect"),
+                "mp": (restored or {}).get("mp"),
+                "mult": (restored or {}).get("mult"),
+                "resample": (restored or {}).get("resample"),
+                "fill": (restored or {}).get("fill"),
+                "dim": (restored or {}).get("dim"),
+            }
+            check(
+                "восстановление по именам: значения встали на свои виджеты",
+                rv.get("lock") is True
+                and rv.get("aspect") == "4:3" and abs(float(rv.get("mp") or 0) - 3.5) < 0.01
+                and rv.get("mult") == 16 and rv.get("resample") == "bicubic"
+                and rv.get("fill") == "white" and rv.get("dim") == 25,
+                restored,
+            )
+            # Координаты и размер — «зеркала» состояния: редактор пересчитывает их
+            # сам из crop_rect/output_size, поэтому берутся не из воркфлоу.
+            derived = await cdp.eval(STATE_JS)
+            dfrac = derived.get("frac") or {}
+            dnat = derived.get("natural") or [1, 1]
+            exp_cx = round((dfrac.get("x", 0) + dfrac.get("w", 0) / 2 - 0.5) * dnat[0])
+            exp_cy = round((dfrac.get("y", 0) + dfrac.get("h", 0) / 2 - 0.5) * dnat[1])
+            check(
+                "восстановление по именам: координаты пересчитаны из состояния",
+                abs(int(rv.get("cx") or 0) - exp_cx) <= 1 and abs(int(rv.get("cy") or 0) - exp_cy) <= 1,
+                {"got": [rv.get("cx"), rv.get("cy")], "expected": [exp_cx, exp_cy]},
+            )
+            check(
+                "восстановление по именам: испорченное значение пропорций заменено",
+                rv.get("aspect") in ("free", "1:1", "2:3", "3:2", "4:3", "3:4", "16:9", "9:16", "21:9"),
+                rv.get("aspect"),
+            )
+
+            # Реальный воркфлоу пользователя: значения по именам на своих местах.
+            loaded = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const info = { widgets_values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],"
+                "  widgets_values_named: { lock_ratio: true, center_x: 5, center_y: 6,"
+                "   frame_w: 700, frame_h: 800, aspect_ratio: '16:9', megapixels: 2.0,"
+                "   multiplicity: 8, resample: 'lanczos', fill: 'transparent', dim_outside: 50 } };"
+                " try { n.onConfigure(info); } catch (e) { return { error: String(e) }; }"
+                " const g = (nm) => { const ww = (n.widgets || []).find((x) => x.name === nm);"
+                "  return ww ? ww.value : null; };"
+                " return { aspect: g('aspect_ratio'), mp: g('megapixels'), fill: g('fill'),"
+                "  fw: g('frame_w'), cx: g('center_x') }; })()"
+            )
+            await asyncio.sleep(0.35)
+            loaded = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const g = (nm) => { const w = (n.widgets || []).find((x) => x.name === nm);"
+                "  return w ? w.value : null; };"
+                " return { aspect: g('aspect_ratio'), mp: g('megapixels'), fill: g('fill'),"
+                "  fw: g('frame_w'), cx: g('center_x') }; })()"
+            )
+            lv = loaded or {}
+            check(
+                "воркфлоу: значения по именам (16:9, 2 МП) на своих местах",
+                lv.get("aspect") == "16:9"
+                and abs(float(lv.get("mp") or 0) - 2.0) < 0.01
+                and lv.get("fill") == "transparent",
+                loaded,
+            )
+
+            # ── РЕАЛЬНЫЙ ВОРКФЛОУ: значения не должны разъехаться ───────────
+            # Фронтенд восстанавливает значения виджетов позиционно, а порядок
+            # виджетов задаёт редактор. Поэтому проверяем на СОХРАНЁННОМ воркфлоу
+            # пользователя: его сохранённые значения (старый порядок) должны
+            # встать на свои виджеты.
+            real_wf = Path(
+                r"D:\ComfyUI_windows_portable\ComfyUI\user\default\workflows\Test Crop.json"
+            )
+            if real_wf.exists():
+                wf = json.loads(real_wf.read_text(encoding="utf-8"))
+                saved = next(
+                    (n for n in wf.get("nodes", []) if n.get("type") == "DeggCropImage"),
+                    None,
+                )
+                if saved:
+                    info = {
+                        "widgets_values": saved.get("widgets_values", []),
+                        "widgets_values_named": saved.get("widgets_values_named", {}),
+                    }
+                    applied = await cdp.eval(
+                        "(() => { const n = window.__probeCrop;"
+                        " const info = __INFO__;"
+                        " try { n.configure(info); } catch (e) { return { error: String(e) }; }"
+                        " return { ok: true }; })()".replace("__INFO__", json.dumps(info))
+                    )
+                    await asyncio.sleep(0.5)
+                    got = await cdp.eval(
+                        "(() => { const n = window.__probeCrop;"
+                        " const g = (nm) => { const w = (n.widgets || []).find((x) => x.name === nm);"
+                        "  return w ? w.value : null; };"
+                        " return { aspect: g('aspect_ratio'), mp: g('megapixels'),"
+                        "  mult: g('multiplicity'), resample: g('resample'), fill: g('fill'),"
+                        "  dim: g('dim_outside'), lock: g('lock_ratio'),"
+                        "  crop: g('crop_rect'), manual: g('output_size') }; })()"
+                    )
+                    want = saved.get("widgets_values_named", {})
+                    pairs = (
+                        ("aspect", "aspect_ratio"),
+                        ("resample", "resample"),
+                        ("fill", "fill"),
+                        ("mult", "multiplicity"),
+                        ("dim", "dim_outside"),
+                        ("lock", "lock_ratio"),
+                        ("crop", "crop_rect"),
+                        ("manual", "output_size"),
+                    )
+                    same = all(got.get(ours) == want.get(theirs) for ours, theirs in pairs)
+                    check(
+                        "реальный воркфлоу: значения встали на свои виджеты",
+                        bool((applied or {}).get("ok")) and same
+                        and abs(float(got.get("mp") or 0) - float(want.get("megapixels") or 0)) < 0.001,
+                        {"got": got, "want": want},
+                    )
+                else:
+                    print("  ВНИМАНИЕ: в воркфлоу нет ноды DeggCropImage — проверка пропущена")
+            else:
+                print("  ВНИМАНИЕ: реальный воркфлоу не найден — проверка пропущена")
+
             errors = await cdp.eval("window.__probeErrors")
             real = [e for e in (errors or []) if "example.png" not in e and "favicon" not in e]
             check("консоль без ошибок", not real, real[:3])

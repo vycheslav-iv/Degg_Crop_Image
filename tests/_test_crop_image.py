@@ -522,34 +522,50 @@ check("unknown enum values fall back", bad[0].shape == (1, 10, 10, 4), bad[0].sh
 check("bad ret fields ints", isinstance(bad[2], int) and isinstance(bad[3], int))
 
 types = mod.DeggCropImage.INPUT_TYPES()
-check("crop_rect is hidden STRING", types["required"]["crop_rect"][0] == "STRING" and types["required"]["crop_rect"][1].get("hidden") is True)
+check("crop_rect is hidden STRING", types["optional"]["crop_rect"][0] == "STRING" and types["optional"]["crop_rect"][1].get("hidden") is True)
 check("mask is optional MASK", types["optional"]["mask"][0] == "MASK")
 check("lanczos is the default resample", types["required"]["resample"][1]["default"] == "lanczos")
-check("lock_ratio default on", types["required"]["lock_ratio"][1]["default"] is True)
-_lock = types["required"]["lock_ratio"][1]
+def _opt(name):
+    """Интерфейсные входы объявлены необязательными (см. контракт ниже)."""
+    return types["optional"][name][1]
+
+
+check("lock_ratio default on", _opt("lock_ratio")["default"] is True)
+_lock = _opt("lock_ratio")
 check("lock_ratio подписи EN-источник", _lock.get("label_on") == "Locked" and _lock.get("label_off") == "Free", _lock)
-_cx = types["required"]["center_x"][1]
-_cy = types["required"]["center_y"][1]
+_cx = _opt("center_x")
+_cy = _opt("center_y")
 check(
     "frame_w/frame_h — INT (размер рамки в пикселях)",
-    types["required"]["frame_w"][0] == "INT"
-    and types["required"]["frame_h"][0] == "INT"
-    and types["required"]["frame_w"][1]["step"] == 1
-    and types["required"]["frame_h"][1]["step"] == 1
-    and types["required"]["frame_w"][1]["min"] == 0
-    and types["required"]["frame_h"][1]["min"] == 0,
-    {"frame_w": types["required"]["frame_w"][1], "frame_h": types["required"]["frame_h"][1]},
+    types["optional"]["frame_w"][0] == "INT"
+    and types["optional"]["frame_h"][0] == "INT"
+    and _opt("frame_w")["step"] == 1
+    and _opt("frame_h")["step"] == 1
+    and _opt("frame_w")["min"] == 0
+    and _opt("frame_h")["min"] == 0,
+    {"frame_w": _opt("frame_w"), "frame_h": _opt("frame_h")},
 )
 check(
     "output_size — скрытый STRING (ручной размер результата)",
-    types["required"]["output_size"][0] == "STRING"
-    and types["required"]["output_size"][1].get("hidden") is True,
-    types["required"]["output_size"],
+    types["optional"]["output_size"][0] == "STRING"
+    and types["optional"]["output_size"][1].get("hidden") is True,
+    types["optional"]["output_size"],
+)
+check(
+    "crop_rect — скрытый STRING (состояние кадра)",
+    types["optional"]["crop_rect"][0] == "STRING"
+    and types["optional"]["crop_rect"][1].get("hidden") is True,
+    types["optional"]["crop_rect"],
+)
+check(
+    "aspect_ratio — COMBO среди необязательных",
+    types["optional"]["aspect_ratio"][0] == ["free", "1:1", "2:3", "3:2", "4:3", "3:4", "16:9", "9:16", "21:9"],
+    types["optional"]["aspect_ratio"][0],
 )
 check(
     "center_x/center_y — INT со знаком (смещение в пикселях)",
-    types["required"]["center_x"][0] == "INT"
-    and types["required"]["center_y"][0] == "INT"
+    types["optional"]["center_x"][0] == "INT"
+    and types["optional"]["center_y"][0] == "INT"
     and _cx["min"] < 0
     and _cy["min"] < 0
     and _cx["step"] == 1
@@ -561,22 +577,37 @@ check(
     not any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in str(types)) ,
 )
 check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom_nodes/Image")
-# Порядок виджетов на теле ноды = порядок ключей INPUT_TYPES.
-EXPECTED_WIDGET_ORDER = [
+# Интерфейсные входы объявлены НЕОБЯЗАТЕЛЬНЫМИ: сервер их не читает, и API
+# не должен требовать их передавать. Порядок виджетов на теле ноды задаёт
+# редактор (WIDGET_ORDER в web/js/crop_image.js) — он проверяется аудитом и
+# живой DOM-пробой.
+INTERFACE_INPUTS = [
     "lock_ratio",
     "center_x",
     "center_y",
     "frame_w",
     "frame_h",
     "aspect_ratio",
-    "megapixels",
-    "multiplicity",
-    "resample",
-    "fill",
-    "dim_outside",
 ]
-order = [k for k in types["required"] if k not in ("image", "crop_rect", "output_size")]
-check("порядок виджетов", order == EXPECTED_WIDGET_ORDER, order)
+check(
+    "интерфейсные входы объявлены необязательными",
+    all(name in types["optional"] for name in INTERFACE_INPUTS)
+    and not any(name in types["required"] for name in INTERFACE_INPUTS),
+    {"optional": list(types["optional"]), "required": list(types["required"])},
+)
+check(
+    "мегапиксели и прочее остались обязательными",
+    all(
+        name in types["required"]
+        for name in ("megapixels", "multiplicity", "resample", "fill", "dim_outside")
+    ),
+    list(types["required"]),
+)
+check(
+    "вход mask остался необязательным",
+    "mask" in types["optional"],
+    list(types["optional"]),
+)
 check("RETURN_TYPES", mod.DeggCropImage.RETURN_TYPES == ("IMAGE", "MASK", "INT", "INT"))
 check("mapping registered", mod.NODE_CLASS_MAPPINGS.get("DeggCropImage") is mod.DeggCropImage)
 

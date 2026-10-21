@@ -46,23 +46,37 @@ check("Python: нет IS_CHANGED (кэш зависит от входа)", !/def
 // ── Python: входы ───────────────────────────────────────────────────────────
 const required = PY.slice(PY.indexOf('"required": {'), PY.indexOf('"optional": {'));
 const inputNames = [...required.matchAll(/^ {16}"?([a-z_]+)"?:\s*\(/gm)].map((m) => m[1]);
-const EXPECTED = [
+const EXPECTED_REQUIRED = [
   "image",
+  "megapixels",
+  "multiplicity",
+  "resample",
+  "fill",
+  "dim_outside",
+];
+const EXPECTED_OPTIONAL = [
+  "crop_rect",
+  "output_size",
   "lock_ratio",
   "center_x",
   "center_y",
   "frame_w",
   "frame_h",
   "aspect_ratio",
-  "megapixels",
-  "multiplicity",
-  "resample",
-  "fill",
-  "dim_outside",
-  "crop_rect",
-  "output_size",
+  "mask",
 ];
-check("Python: набор входов", inputNames.join(",") === EXPECTED.join(","), inputNames.join(","));
+const optionalBlock = PY.slice(PY.indexOf('"optional": {'));
+const optionalNames = [...optionalBlock.matchAll(/^ {16}"([a-z_]+)":/gm)].map((m) => m[1]);
+check(
+  "Python: набор обязательных входов",
+  inputNames.join(",") === EXPECTED_REQUIRED.join(","),
+  inputNames.join(","),
+);
+check(
+  "Python: набор необязательных входов",
+  optionalNames.join(",") === EXPECTED_OPTIONAL.join(","),
+  optionalNames.join(","),
+);
 check("Python: crop_rect — скрытый STRING", /"crop_rect":\s*\("STRING",\s*HIDDEN_OPTIONS\)/.test(PY));
 check("Python: hidden-опции не сериализуются в UI", /HIDDEN_OPTIONS\s*=\s*\{[^}]*"hidden"\s*:\s*True/.test(PY));
 check("Python: crop_rect по умолчанию полный кадр", /DEFAULT_RECT\s*=\s*\{[^}]*"w":\s*1\.0/.test(PY));
@@ -162,7 +176,7 @@ check(
 check(
   "JS: восстановление воркфлоу рамку не сбрасывает (флаг restoring)",
   /restoring:\s*false, \/\/ нода восстанавливается/.test(JS) &&
-    /node\.onConfigure = function \(\)[\s\S]{0,200}?state\.restoring = true/.test(JS) &&
+    /node\.onConfigure = function \([^)]*\)[\s\S]{0,400}?state\.restoring = true/.test(JS) &&
     /function refresh\(\)[\s\S]{0,200}?state\.restoring = true/.test(JS) &&
     /isNewImage && !restoring/.test(JS),
 );
@@ -415,6 +429,40 @@ check(
   "JS: итоговый размер считается по ПИКСЕЛЯМ кадра (как в Python), а не по долям",
   /function resultSize\(\)[\s\S]{0,400}?computeOutputSize\(cropPx\(\)\.w, cropPx\(\)\.h/.test(JS) &&
     !/computeOutputSize\(state\.frac\.w, state\.frac\.h/.test(JS),
+);
+
+// ── Порядок виджетов и восстановление значений ─────────────────────────────────
+// ComfyUI рисует обязательные входы первыми, а «интерфейсные» (необязательные)
+// — после, поэтому порядок на теле ноды задаёт редактор.
+const WIDGET_ORDER_EXPECTED = [
+  "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
+  "megapixels", "multiplicity", "resample", "fill", "dim_outside",
+];
+const orderBlock = (JS.slice(JS.indexOf("const WIDGET_ORDER = [")).split("];")[0] || "");
+const orderFound = [...orderBlock.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+check(
+  "JS: порядок виджетов задан константой WIDGET_ORDER",
+  orderFound.join(",") === WIDGET_ORDER_EXPECTED.join(","),
+  orderFound.join(","),
+);
+check(
+  "JS: виджеты переставляются по WIDGET_ORDER (превью — первым)",
+  /node\.widgets\.length = 0;[\s\S]{0,120}?node\.widgets\.push\(widget, \.\.\.rest\)/.test(JS) &&
+    /WIDGET_ORDER\.indexOf\(a\?\.name\)/.test(JS),
+);
+check(
+  "JS: значения виджетов восстанавливаются по ИМЕНАМ (фронтенд — позиционно)",
+  /function restoreWidgetValuesByName\(info\)[\s\S]{0,700}?widgets_values_named/.test(JS) &&
+    /restoreWidgetValuesByName\(info\)/.test(JS) &&
+    /function sanitizeWidgetValues\(\)/.test(JS),
+);
+const optionalSource = PY.slice(PY.indexOf('"optional": {'));
+const optionalHas = (name) => optionalSource.indexOf(`"${name}"`) >= 0;
+check(
+  "Python: интерфейсные и скрытые входы — необязательные",
+  ["lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
+   "crop_rect", "output_size"].every(optionalHas) &&
+    !/"required":\s*\{[\s\S]{0,400}?"lock_ratio"/.test(PY),
 );
 
 // ── Итог ───────────────────────────────────────────────────────────────────

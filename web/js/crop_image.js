@@ -16,6 +16,21 @@ const apiNs = window.comfyAPI?.api;
 const api = apiNs?.api ?? apiNs;
 
 const NODE_CLASS = 'DeggCropImage';
+// Порядок виджетов на теле ноды. ComfyUI рисует обязательные входы первыми, а
+// «интерфейсные» (необязательные) — после, поэтому порядок задаёт редактор.
+const WIDGET_ORDER = [
+  'lock_ratio',
+  'center_x',
+  'center_y',
+  'frame_w',
+  'frame_h',
+  'aspect_ratio',
+  'megapixels',
+  'multiplicity',
+  'resample',
+  'fill',
+  'dim_outside',
+];
 const CSS_ID = 'degg-crop-image-css';
 const MIN_H = 180;
 const MAX_H = 560;
@@ -1472,9 +1487,44 @@ function createEditor(node, widget) {
     return result;
   };
 
+  // Фронтенд восстанавливает значения виджетов ПОЗИЦИОННО (настройка
+  // Comfy.Workflow.NamedValuesRestore выключена по умолчанию), а порядок
+  // виджетов задаёт редактор. Поэтому после восстановления выправляем значения
+  // по именам из info.widgets_values_named — иначе старые воркфлои разъедутся.
+  function restoreWidgetValuesByName(info) {
+    const named = info?.widgets_values_named;
+    if (!named) return false;
+    let applied = false;
+    for (const widget of node.widgets || []) {
+      if (!widget || !(widget.name in named)) continue;
+      const value = named[widget.name];
+      if (widget.value === value) continue;
+      widget.value = value;
+      applied = true;
+    }
+    return applied;
+  }
+
+  // Подстраховка: если значения приехалиpositional-и с чужими типами (старый
+  // воркфлоу без именованной карты), приводим их к корректным.
+  function sanitizeWidgetValues() {
+    const aspect = widgetByName(node, 'aspect_ratio');
+    if (aspect && !Object.prototype.hasOwnProperty.call(RATIO_VALUES, aspect.value)) {
+      aspect.value = 'free';
+    }
+    const lock = widgetByName(node, 'lock_ratio');
+    if (lock && typeof lock.value !== 'boolean') lock.value = false;
+    for (const name of ['center_x', 'center_y', 'frame_w', 'frame_h']) {
+      const widget = widgetByName(node, name);
+      if (widget && !Number.isFinite(Number(widget.value))) widget.value = 0;
+    }
+  }
+
   const configure = node.onConfigure;
-  node.onConfigure = function () {
+  node.onConfigure = function (info) {
     const result = configure?.apply(this, arguments);
+    restoreWidgetValuesByName(info);
+    sanitizeWidgetValues();
     state.restoring = true;
     loadStateFromWidgets();
     requestAnimationFrame(() => {
@@ -1545,11 +1595,15 @@ function setupNode(node) {
   const editor = createEditor(node, widget);
   container.appendChild(editor.widget);
 
-  const index = node.widgets?.indexOf(widget) ?? -1;
-  if (index > 0) {
-    node.widgets.splice(index, 1);
-    node.widgets.unshift(widget);
-  }
+  // Превью — первым, остальные — по WIDGET_ORDER.
+  const rest = (node.widgets || []).filter((w) => w !== widget);
+  rest.sort((a, b) => {
+    const ia = WIDGET_ORDER.indexOf(a?.name);
+    const ib = WIDGET_ORDER.indexOf(b?.name);
+    return (ia < 0 ? WIDGET_ORDER.length : ia) - (ib < 0 ? WIDGET_ORDER.length : ib);
+  });
+  node.widgets.length = 0;
+  node.widgets.push(widget, ...rest);
 
   node.__deggCrop = editor;
   node.setDirtyCanvas?.(true, true);

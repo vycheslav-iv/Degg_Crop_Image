@@ -331,6 +331,72 @@ class DeggCropImage:
         return {
             "required": {
                 "image": ("IMAGE", {"tooltip": "Source image batch."}),
+                "megapixels": (
+                    "FLOAT",
+                    {
+                        "default": 2.0,
+                        "min": 0.1,
+                        "max": 64.0,
+                        "step": 0.1,
+                        "tooltip": "Target output area in megapixels (1 MP = 1,000,000 px).",
+                    },
+                ),
+                "multiplicity": (
+                    "INT",
+                    {
+                        "default": 8,
+                        "min": 8,
+                        "max": 128,
+                        "step": 4,
+                        "tooltip": "Nearest multiple of the result to set the selected resolution to.",
+                    },
+                ),
+                "resample": (
+                    RESAMPLE_METHODS,
+                    {
+                        "default": "lanczos",
+                        "tooltip": "Resampling filter used when the frame is rescaled.",
+                    },
+                ),
+                "fill": (
+                    FILL_MODES,
+                    {
+                        "default": "transparent",
+                        "tooltip": "Color of the area outside the source image.",
+                    },
+                ),
+                "dim_outside": (
+                    "INT",
+                    {
+                        "default": 50,
+                        "min": 0,
+                        "max": 100,
+                        "tooltip": "Display only: darken the area outside the frame.",
+                    },
+                ),
+            },
+            # Скрытые служебные входы — необязательные: API не должен требовать
+            # их передавать (значения по умолчанию корректны).
+            "optional": {
+                # Скрытые служебные значения (состояние кадра и ручной размер
+                # результата) и элементы управления редактором. Сервер читает
+                # только crop_rect/output_size/megapixels/multiplicity —
+                # остальное нужно интерфейсу.
+                "crop_rect": ("STRING", HIDDEN_OPTIONS),
+                "output_size": (
+                    "STRING",
+                    {
+                        "hidden": True,
+                        "advanced": True,
+                        "tooltip": "Internal: manual result size 'W,H' in pixels, "
+                        "written by the node UI. Empty = size is derived from megapixels.",
+                    },
+                ),
+                # Интерфейсные элементы управления редактором кадра. Сервер их не
+                # читает (состояние — в crop_rect/output_size), но объявлять их
+                # необязательными нужно, чтобы запуск через API не требовал
+                # передавать фиктивные значения. Порядок виджетов на теле ноды
+                # задаёт редактор (WIDGET_ORDER в web/js/crop_image.js).
                 "lock_ratio": (
                     "BOOLEAN",
                     {
@@ -389,61 +455,6 @@ class DeggCropImage:
                         "tooltip": "Frame aspect ratio. Inactive while Lock Ratio is off.",
                     },
                 ),
-                "megapixels": (
-                    "FLOAT",
-                    {
-                        "default": 2.0,
-                        "min": 0.1,
-                        "max": 64.0,
-                        "step": 0.1,
-                        "tooltip": "Target output area in megapixels (1 MP = 1,000,000 px).",
-                    },
-                ),
-                "multiplicity": (
-                    "INT",
-                    {
-                        "default": 8,
-                        "min": 8,
-                        "max": 128,
-                        "step": 4,
-                        "tooltip": "Nearest multiple of the result to set the selected resolution to.",
-                    },
-                ),
-                "resample": (
-                    RESAMPLE_METHODS,
-                    {
-                        "default": "lanczos",
-                        "tooltip": "Resampling filter used when the frame is rescaled.",
-                    },
-                ),
-                "fill": (
-                    FILL_MODES,
-                    {
-                        "default": "transparent",
-                        "tooltip": "Color of the area outside the source image.",
-                    },
-                ),
-                "dim_outside": (
-                    "INT",
-                    {
-                        "default": 50,
-                        "min": 0,
-                        "max": 100,
-                        "tooltip": "Display only: darken the area outside the frame.",
-                    },
-                ),
-                "crop_rect": ("STRING", HIDDEN_OPTIONS),
-                "output_size": (
-                    "STRING",
-                    {
-                        "hidden": True,
-                        "advanced": True,
-                        "tooltip": "Internal: manual result size 'W,H' in pixels, "
-                        "written by the node UI. Empty = size is derived from megapixels.",
-                    },
-                ),
-            },
-            "optional": {
                 "mask": (
                     "MASK",
                     {
