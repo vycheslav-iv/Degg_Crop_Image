@@ -152,6 +152,19 @@ class T:
             data.append(self.data[sum(c * s for c, s in zip(src, strides))])
         return T(new_shape, data)
 
+    def __sub__(self, other):
+        if isinstance(other, (int, float)):
+            return T(self.shape, [v - float(other) for v in self.data])
+        if isinstance(other, T):
+            other_data = _broadcast(other, self.shape)
+            return T(self.shape, [a - b for a, b in zip(self.data, other_data)])
+        raise TypeError(f"unsupported operand {type(other)}")
+
+    def __rsub__(self, other):
+        if isinstance(other, (int, float)):
+            return T(self.shape, [float(other) - v for v in self.data])
+        raise TypeError(f"unsupported operand {type(other)}")
+
     def __repr__(self):
         return f"T{self.shape}"
 
@@ -395,14 +408,61 @@ check("black fill mask", close(mask[0, 0, 0], 1.0) and close(mask[0, 10, 10], 1.
 # With an alpha channel (mask input) the fill is opaque too.
 out, mask, w, h = mod.render_frames(make_image(1, 10, 10), T((1, 10, 10), [0.25] * 100), pad, "black", "bicubic", 0.0004, 1)
 check("black fill alpha", close(out[0, 0, 0, 3], 1.0))
-check("mask wins inside with opaque fill", close(out[0, 10, 10, 3], 0.25), out[0, 10, 10].data)
+check(
+    "маска 0.25 = скрыть четверть (видимая альфа 0.75)",
+    close(out[0, 10, 10, 3], 0.75),
+    out[0, 10, 10].data,
+)
 
-# Mask input replaces the alpha (including inside the image).
-alpha = T((1, 10, 10), [0.25] * 100)
-out, mask, w, h = mod.render_frames(make_image(1, 10, 10), alpha, full, "transparent", "bicubic", 0.0001, 1)
-check("mask becomes alpha", close(out[0, 2, 2, 3], 0.25), out[0, 2, 2, 3])
-check("mask becomes mask out", close(mask[0, 2, 2], 0.25), mask[0, 2, 2])
-check("mask keeps rgb", close(out[0, 2, 2, 0], 220.0), out[0, 2, 2, 0])
+# ── Маска ComfyUI ───────────────────────────────────────────────────────────
+# В ComfyUI маска = 1 там, где область надо УБРАТЬ (LoadImage отдаёт 1 - alpha).
+# Значит видимая альфа = 1 - маска, а сама маска живёт в координатах
+# ИСТОЧНИКА и вырезается по области кадра (её нельзя сжимать в область).
+
+# Маска нулевая = ничего не скрывать (так отдаёт LoadImage для картинки без
+# альфы — заглушка 64×64 нулей). Раньше маска трактовалась как альфа, и весь
+# кадр становился прозрачным (чёрный выход).
+zero_mask = T((1, 10, 10), [0.0] * 100)
+out, mask, w, h = mod.render_frames(make_image(1, 10, 10), zero_mask, full, "transparent", "bicubic", 0.0001, 1)
+check("маска нулевая = ничего не скрывать (альфа 1)", close(out[0, 2, 2, 3], 1.0), out[0, 2, 2, 3])
+check("маска нулевая: RGB не тронут", close(out[0, 2, 2, 0], 220.0), out[0, 2, 2, 0])
+
+one_mask = T((1, 10, 10), [1.0] * 100)
+out, mask, w, h = mod.render_frames(make_image(1, 10, 10), one_mask, full, "transparent", "bicubic", 0.0001, 1)
+check("маска единичная = скрыть всё (альфа 0)", close(out[0, 2, 2, 3], 0.0), out[0, 2, 2, 3])
+
+half_mask = T((1, 10, 10), [0.5] * 100)
+out, mask, w, h = mod.render_frames(make_image(1, 10, 10), half_mask, full, "transparent", "bicubic", 0.0001, 1)
+check("маска 0.5 = 半 полупрозрачно (альфа 0.5)", close(out[0, 2, 2, 3], 0.5), out[0, 2, 2, 3])
+
+# Маска вырезается по области кадра, а не сжимается в неё.
+big_mask = T((1, 20, 20), [0.0] * 400)
+for _y in range(10):
+    for _x in range(10):
+        big_mask.data[_y * 20 + _x] = 1.0  # верхний левый квадрант скрыт
+out, mask, w, h = mod.render_frames(make_image(1, 20, 20), big_mask, half, "transparent", "bicubic", 0.0001, 1)
+check(
+    "маска вырезается по области кадра (нижний правый квадрант не скрыт)",
+    close(out[0, 2, 2, 3], 1.0),
+    out[0, 2, 2].data,
+)
+# Пиксель, где «вырезать» и «сжать в область» дают разный результат:
+# вырезанная маска в правом нижнем квадранте = 0 (не скрыто), сжатая = 1.
+check(
+    "маска вырезается, а не сжимается в область кадра",
+    close(out[0, 7, 7, 3], 1.0),
+    out[0, 7, 7].data,
+)
+
+# Заглушка другого размера (LoadImage: 64×64 для картинки без альфы) приводится
+# к размеру источника и ничего не скрывает.
+stub_mask = T((1, 64, 64), [0.0] * 4096)
+out, mask, w, h = mod.render_frames(make_image(1, 20, 20), stub_mask, half, "transparent", "bicubic", 0.0001, 1)
+check(
+    "маска-заглушка 64×64 = ничего не скрывать",
+    close(out[0, 2, 2, 3], 1.0),
+    out[0, 2, 2].data,
+)
 
 # RGB source + opaque fill stays 3-channel.
 out, mask, w, h = mod.render_frames(make_image(1, 10, 10), None, full, "white", "bicubic", 0.0001, 1)
@@ -424,10 +484,11 @@ out, mask, w, h = mod.render_frames(make_image(1, 10, 10), None, half, "transpar
 check("nearest-exact path", out.shape == (1, 10, 10, 4) and close(out[0, 0, 0, 0], 550.0), out.shape)
 
 # Batch masks: each frame must take its OWN mask frame, not the first one.
+# Маска ComfyUI: 1 = убрать, поэтому видимая альфа = 1 - маска.
 masks = T((2, 10, 10), [0.25] * 100 + [0.75] * 100)
 out, mask, w, h = mod.render_frames(make_image(2, 10, 10), masks, full, "transparent", "bicubic", 0.0001, 1)
-check("batch mask frame 0", close(out[0, 5, 5, 3], 0.25), out[0, 5, 5].data)
-check("batch mask frame 1", close(out[1, 5, 5, 3], 0.75), out[1, 5, 5].data)
+check("batch mask frame 0", close(out[0, 5, 5, 3], 0.75), out[0, 5, 5].data)
+check("batch mask frame 1", close(out[1, 5, 5, 3], 0.25), out[1, 5, 5].data)
 
 # ────────────────────────────── 7. node API ────────────────────────────────
 

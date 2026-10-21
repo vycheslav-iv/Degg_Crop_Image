@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 _tmp_*.py
 _shot.png
+_mask_check.png

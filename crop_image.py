@@ -218,16 +218,28 @@ def _resize(tensor, width: int, height: int, method: str):
     return out[0].permute(1, 2, 0)
 
 
-def _mask_frame(mask, index: int, height: int, width: int):
-    """Pick one MASK frame and fit it to the source patch."""
+def _mask_alpha(
+    mask, index: int, src_h: int, src_w: int, y0: int, y1: int, x0: int, x1: int
+):
+    """Видимая альфа по маске ComfyUI.
+
+    В ComfyUI маска = 1 там, где область надо УБРАТЬ (LoadImage отдаёт
+    ``1 - alpha``), поэтому видимая альфа = ``1 - маска``.
+
+    Маска лежит в координатах ИСТОЧНИКА: её нужно ВЫРЕЗАТЬ по области кадра,
+    а не сжимать в неё (иначе маска съезжает). Если размер маски не совпадает с
+    источником (LoadImage для картинки без альфы отдаёт заглушку 64×64), она
+    приводится к размеру источника.
+    """
     frame = mask if getattr(mask, "dim", lambda: 2)() == 2 else mask[
         min(index, max(int(mask.shape[0]) - 1, 0))
     ]
-    if tuple(frame.shape[:2]) != (height, width):
+    if tuple(frame.shape[:2]) != (src_h, src_w):
         frame = F.interpolate(
-            frame[None, None], size=(height, width), mode="nearest-exact"
+            frame[None, None], size=(src_h, src_w), mode="nearest-exact"
         )[0, 0]
-    return frame
+    region = frame[y0:y1, x0:x1]
+    return 1.0 - region
 
 
 def _fill_color(mode: str, channels: int):
@@ -289,7 +301,10 @@ def render_frames(
 
         patch = frame[iy0:iy1, ix0:ix1, :]
         if mask is not None:
-            alpha = _mask_frame(mask, index, iy1 - iy0, ix1 - ix0)
+            # Маска ComfyUI: 1 = убрать. Видимая альфа = 1 - маска.
+            alpha = _mask_alpha(
+                mask, index, src_h, src_w, iy0, iy1, ix0, ix1
+            )
             patch = torch.cat([patch[..., :3], alpha[..., None]], dim=-1)
         elif channels == 4:
             if int(patch.shape[-1]) >= 4:
