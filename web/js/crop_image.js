@@ -72,6 +72,7 @@ const LABELS = {
       'Выбор пропорции в списке — рамка принимает её и включает фиксацию.',
       '«Свободно» — список пропорций переключается на «Свободные».',
       'X/Y — положение центра рамки относительно центра изображения, в пикселях.',
+      'Ширина/высота — размер рамки в пикселях; центр при этом не уезжает, а мегапиксели задают размер результата.',
       '«Вписать» — вписать рамку в изображение с сохранением пропорций; «По центру» — центрировать; «Сбросить» — рамка по изображению и свободные пропорции.',
     ],
   },
@@ -102,6 +103,7 @@ const LABELS = {
       'Picking a ratio from the list applies it and turns locking on.',
       'Free switches the ratio list to Free.',
       'X/Y — frame centre offset from the image centre, in pixels.',
+      'Width/height — frame size in pixels; the centre stays put, megapixels set the result size.',
       'Fit — fit the frame into the image keeping proportions; Center — centre it; Reset — whole image and free proportions.',
     ],
   },
@@ -217,6 +219,47 @@ export function moveFrameToOffset(rect, imgW, imgH, offsetX, offsetY) {
     y: (cy - (h * imgH) / 2) / imgH,
     w,
     h,
+  });
+}
+
+/**
+ * Задать размер рамки в пикселях источника, НЕ двигая её центр.
+ *
+ * Семантика та же, что у тянучки мышью:
+ * - в свободном режиме меняется ТОЛЬКО названная сторона;
+ * - при зафиксированных пропорциях вторая сторона следует за первой;
+ * - центр рамки остаётся на месте (позиция задаётся полями координат).
+ */
+export function frameWithSize(rect, imgW, imgH, size, axis, ratio, minPx = 16) {
+  const w0 = Number(rect?.w) * imgW;
+  const h0 = Number(rect?.h) * imgH;
+  if (!(imgW > 0) || !(imgH > 0) || !(w0 > 0) || !(h0 > 0)) return { ...rect };
+  const target = Number(size);
+  if (!Number.isFinite(target)) return { ...rect };
+
+  const minW = Math.max(1, Math.min(minPx, imgW));
+  const minH = Math.max(1, Math.min(minPx, imgH));
+  const maxW = 100 * imgW; // clampFrac держит доли в пределах 100
+  const maxH = 100 * imgH;
+  const locked = ratio && Number.isFinite(ratio) && ratio > 0;
+
+  let w = w0;
+  let h = h0;
+  if (axis === 'h') {
+    h = Math.min(Math.max(target, minH), maxH);
+    if (locked) w = Math.min(Math.max(h * ratio, minW), maxW);
+  } else {
+    w = Math.min(Math.max(target, minW), maxW);
+    if (locked) h = Math.min(Math.max(w / ratio, minH), maxH);
+  }
+
+  const cx = Number(rect.x) * imgW + w0 / 2;
+  const cy = Number(rect.y) * imgH + h0 / 2;
+  return clampFrac({
+    x: (cx - w / 2) / imgW,
+    y: (cy - h / 2) / imgH,
+    w: w / imgW,
+    h: h / imgH,
   });
 }
 
@@ -502,6 +545,8 @@ function createEditor(node, widget) {
   const lockWidget = widgetByName(node, 'lock_ratio');
   const centerXWidget = widgetByName(node, 'center_x');
   const centerYWidget = widgetByName(node, 'center_y');
+  const frameWWidget = widgetByName(node, 'frame_w');
+  const frameHWidget = widgetByName(node, 'frame_h');
   const dimWidget = widgetByName(node, 'dim_outside');
   const multWidget = widgetByName(node, 'multiplicity');
   const mpWidget = widgetByName(node, 'megapixels');
@@ -565,6 +610,31 @@ function createEditor(node, widget) {
     setFrac(moveFrameToOffset(state.frac, state.img.w, state.img.h, ox, oy));
   }
 
+  // Размер рамки в пикселях источника — та же операция, что тянучка мышью:
+  // свободный режим меняет одну сторону, фиксация тянет вторую за собой.
+  // Мегапиксели при этом НЕ отключаются: MP задаёт размер ВЫХОДА, а рамка —
+  // размер обреза в пикселях источника (как при перетаскивании).
+  function syncSize() {
+    if (!state.img) {
+      setWidgetValueQuiet(frameWWidget, 0);
+      setWidgetValueQuiet(frameHWidget, 0);
+      return;
+    }
+    const r = pxRect();
+    setWidgetValueQuiet(frameWWidget, Math.round(r.w));
+    setWidgetValueQuiet(frameHWidget, Math.round(r.h));
+  }
+
+  function applySize(axis, value) {
+    if (!state.img) return;
+    const size = Number(value);
+    if (!Number.isFinite(size) || size <= 0) {
+      syncSize(); // нелегальное значение — возвращаем настоящий размер рамки
+      return;
+    }
+    setFrac(frameWithSize(state.frac, state.img.w, state.img.h, size, axis, effectiveRatio()));
+  }
+
   function pxRect() {
     if (!state.img) return { x: 0, y: 0, w: 0, h: 0 };
     return {
@@ -622,6 +692,7 @@ function createEditor(node, widget) {
     refreshLayoutSize();
     layout();
     syncCoords();
+    syncSize();
   }
 
   function layoutBadge(r) {
@@ -1245,6 +1316,19 @@ function createEditor(node, widget) {
     };
   }
 
+  // Поля размера рамки: правка → размер, пропорции и плашка пересчитываются
+  // тем же путём, что и при перетаскивании мышью.
+  for (const [widget, axis] of [[frameWWidget, 'w'], [frameHWidget, 'h']]) {
+    if (!widget?.callback) continue;
+    const original = widget.callback;
+    widget.callback = (...args) => {
+      const result = original.apply(widget, args);
+      if (state.suppress) return result;
+      applySize(axis, args[0] ?? widget.value);
+      return result;
+    };
+  }
+
   // Изменение «косметики» и параметров выхода перерисовывает сцену сразу:
   // без этого затемнение и плашка отстают до следующего resize/drag.
   for (const widget of [dimWidget, fillWidget, mpWidget, multWidget]) {
@@ -1334,6 +1418,8 @@ function createEditor(node, widget) {
     state,
     centerX: centerXWidget,
     centerY: centerYWidget,
+    frameW: frameWWidget,
+    frameH: frameHWidget,
     helpBox,
     helpBtn,
     syncCoords,

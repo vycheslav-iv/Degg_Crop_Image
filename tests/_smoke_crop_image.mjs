@@ -76,6 +76,7 @@ vm.runInContext(src + "\nglobalThis.__RATIOS = RATIO_VALUES;\n", ctx, { filename
 
 const { pyRound, computeOutputSize, parseRectFrac, clampFrac, resizeFrame } = ctx;
 const { centerFrameFrac, fitFrameFrac, frameCenterOffset, moveFrameToOffset, axisDelta } = ctx;
+const { frameWithSize } = ctx;
 
 // ── 1. pyRound = Python round() (banker's) ──────────────────────────────────
 check("pyRound(0.5) == 0", pyRound(0.5) === 0, pyRound(0.5));
@@ -263,6 +264,62 @@ const ax = AXIS(30, 10);
 check("Shift-движение: горизонталь побеждает при большем dx", near1(ax.dx, 30) && near1(ax.dy, 0), JSON.stringify(ax));
 const ay = AXIS(5, -20);
 check("Shift-движение: вертикаль побеждает при большем dy", near1(ay.dx, 0) && near1(ay.dy, -20), JSON.stringify(ay));
+
+// ── 8. Ручной размер рамки (ширина/высота в пикселях) ───────────────────────
+// Семантика та же, что у тянучки мышью: свободный режим меняет ТОЛЬКО
+// указанную сторону, зафиксированные пропорции тянут вторую за собой.
+// Центр рамки при этом не уезжает — позиция задаётся полями координат.
+const SIZE = (r, w, h, size, axis, ratio) =>
+  typeof frameWithSize === "function" ? frameWithSize(r, w, h, size, axis, ratio) : null;
+
+const RECT = { x: 0.1, y: 0.2, w: 0.4, h: 0.2 };
+const IMG_W = 1000;
+const IMG_H = 500;
+const centreOf = (r) => ({
+  x: (r.x + r.w / 2) * IMG_W,
+  y: (r.y + r.h / 2) * IMG_H,
+});
+
+const freeW = SIZE(RECT, IMG_W, IMG_H, 300, "w", null);
+check(
+  "размер: в свободном режиме меняется только ширина",
+  freeW && near1(freeW.w * IMG_W, 300) && near1(freeW.h * IMG_H, 100),
+  JSON.stringify(freeW),
+);
+check(
+  "размер: центр рамки остаётся на месте",
+  freeW && near1(centreOf(freeW).x, 300) && near1(centreOf(freeW).y, 150),
+  freeW ? JSON.stringify(centreOf(freeW)) : "null",
+);
+
+const lockedW = SIZE(RECT, IMG_W, IMG_H, 300, "w", 2);
+check(
+  "размер: при зафиксированных пропорциях высота следует за шириной",
+  lockedW && near1(lockedW.w * IMG_W, 300) && near1(lockedW.h * IMG_H, 150),
+  JSON.stringify(lockedW),
+);
+check(
+  "размер: центр рамки не уезжает и при фиксации пропорций",
+  lockedW && near1(centreOf(lockedW).x, 300) && near1(centreOf(lockedW).y, 150),
+  lockedW ? JSON.stringify(centreOf(lockedW)) : "null",
+);
+
+const lockedH = SIZE(RECT, IMG_W, IMG_H, 150, "h", 2);
+check(
+  "размер: при зафиксированных пропорциях ширина следует за высотой",
+  lockedH && near1(lockedH.h * IMG_H, 150) && near1(lockedH.w * IMG_W, 300),
+  JSON.stringify(lockedH),
+);
+
+const tinySize = SIZE(RECT, IMG_W, IMG_H, 4, "w", null);
+check("размер: короче минимума (16 px) не сжимается", tinySize && near1(tinySize.w * IMG_W, 16), JSON.stringify(tinySize));
+
+const outside = SIZE(RECT, IMG_W, IMG_H, 5000, "w", null);
+check(
+  "размер: рамка может выйти за пределы изображения (аутпейнт)",
+  outside && near1(outside.w * IMG_W, 5000),
+  JSON.stringify(outside),
+);
 
 // ── итог ───────────────────────────────────────────────────────────────────
 console.log("");

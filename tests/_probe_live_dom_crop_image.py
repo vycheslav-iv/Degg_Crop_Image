@@ -308,6 +308,8 @@ async def main() -> int:
                 "lock_ratio",
                 "center_x",
                 "center_y",
+                "frame_w",
+                "frame_h",
                 "aspect_ratio",
                 "megapixels",
                 "multiplicity",
@@ -662,6 +664,114 @@ async def main() -> int:
                 "ввод координат ставит центр рамки в заданную точку",
                 abs(mc_offset[0] - 100) < 1.5 and abs(mc_offset[1] + 50) < 1.5,
                 {"offset": mc_offset, "frac": mc},
+            )
+
+            # ── ручной размер рамки (ширина/высота в пикселях) ──────────────
+            # Под «Зафиксировано» ширина тянет высоту (пропорции сохраняются),
+            # центр рамки на месте, а размер ВЫХОДА (плашка) не меняется:
+            # мегапиксели задают выход, рамка — обрез в пикселях источника.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " a.value = '16:9'; a.callback && a.callback(a.value);"
+                " e.setFrac({ x: 0.1, y: 0.1, w: 0.5, h: 0.28125 });"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.3)
+            before_size = await cdp.eval(STATE_JS)
+            bs = before_size.get("frac") or {}
+            bn = before_size.get("natural") or [1, 1]
+            badge_before = before_size.get("badge") or ""
+            mp_before = await cdp.eval(
+                "(() => window.__probeCrop.widgets.find((w) => w.name === 'megapixels').value)()"
+            )
+            centre_before = (
+                (bs.get("x", 0) + bs.get("w", 0) / 2) * bn[0],
+                (bs.get("y", 0) + bs.get("h", 0) / 2) * bn[1],
+            )
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " e.frameW.value = 800;"
+                " e.frameW.callback && e.frameW.callback(800, app.canvas, n);"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.3)
+            after_size = await cdp.eval(STATE_JS)
+            as_ = after_size.get("frac") or {}
+            an = after_size.get("natural") or [1, 1]
+            centre_after = (
+                (as_.get("x", 0) + as_.get("w", 0) / 2) * an[0],
+                (as_.get("y", 0) + as_.get("h", 0) / 2) * an[1],
+            )
+            width_px = as_.get("w", 0) * an[0]
+            height_px = as_.get("h", 0) * an[1]
+            check(
+                "ручной размер: ширина рамки = введённое значение (px)",
+                abs(width_px - 800) < 1.5,
+                {"width": width_px},
+            )
+            check(
+                "ручной размер: при «Зафиксировано» высота следует за шириной",
+                abs(height_px - 450) < 2,
+                {"height": height_px},
+            )
+            check(
+                "ручной размер: центр рамки не уезжает",
+                abs(centre_after[0] - centre_before[0]) < 1.5
+                and abs(centre_after[1] - centre_before[1]) < 1.5,
+                {"before": centre_before, "after": centre_after},
+            )
+            check(
+                "ручной размер: размер ВЫХОДА (плашка) не меняется — его задают мегапиксели",
+                (after_size.get("badge") or "") == badge_before,
+                {"before": badge_before, "after": after_size.get("badge")},
+            )
+            mp_after = await cdp.eval(
+                "(() => window.__probeCrop.widgets.find((w) => w.name === 'megapixels').value)()"
+            )
+            check(
+                "ручной размер: мегапиксели НЕ отключаются и не меняются",
+                mp_after == mp_before and "MP" in (after_size.get("badge") or ""),
+                {"before": mp_before, "after": mp_after},
+            )
+            size_field = await cdp.eval(
+                "(() => { const e = window.__probeCrop.__deggCrop; return e.frameW.value; })()"
+            )
+            check(
+                "ручной размер: поле ширины показывает реальный размер рамки",
+                abs(int(size_field) - 800) <= 1,
+                size_field,
+            )
+
+            # В свободном режиме меняется ТОЛЬКО указанная сторона.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " a.value = 'free'; a.callback && a.callback(a.value);"
+                " e.setFrac({ x: 0.1, y: 0.1, w: 0.5, h: 0.5 });"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.3)
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop, e = n.__deggCrop;"
+                " e.frameW.value = 600;"
+                " e.frameW.callback && e.frameW.callback(600, app.canvas, n);"
+                " return true; })()"
+            )
+            await asyncio.sleep(0.3)
+            free_size = await cdp.eval(STATE_JS)
+            fs = free_size.get("frac") or {}
+            fn = free_size.get("natural") or [1, 1]
+            check(
+                "ручной размер: в «Свободно» меняется только ширина",
+                abs(fs.get("w", 0) * fn[0] - 600) < 1.5
+                and abs(fs.get("h", 0) * fn[1] - 384) < 1.5,
+                {"frac": fs},
+            )
+            check(
+                "ручной размер: в «Свободно» пропорции рамки меняются (плашка пересчитывается)",
+                (free_size.get("badge") or "") != badge_before,
+                {"badge": free_size.get("badge")},
             )
 
             # Shift + сторона в свободном режиме: пропорции сохраняются,

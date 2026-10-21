@@ -19,6 +19,14 @@
         "name": "Frame centre Y",
         "tooltip": "Vertical offset of the frame centre from the image centre, in pixels."
       },
+      "frame_w": {
+        "name": "Frame width, px",
+        "tooltip": "Width of the crop region in source pixels. 0 keeps the current frame size."
+      },
+      "frame_h": {
+        "name": "Frame height, px",
+        "tooltip": "Height of the crop region in source pixels. 0 keeps the current frame size."
+      },
       "aspect_ratio": {
         "name": "Aspect ratio",
         "tooltip": "Frame aspect ratio. Inactive while Lock Ratio is off."

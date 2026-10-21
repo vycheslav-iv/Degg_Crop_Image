@@ -51,6 +51,8 @@ const EXPECTED = [
   "lock_ratio",
   "center_x",
   "center_y",
+  "frame_w",
+  "frame_h",
   "aspect_ratio",
   "megapixels",
   "multiplicity",
@@ -322,6 +324,35 @@ check(
   "JS: кнопка «?» живёт в превью (внутри stage), а подсказка — в корне",
   /make\('button',\s*'degg-crop__help',\s*stage\)/.test(JS) &&
     /make\('div',\s*'degg-crop__helpbox',\s*root\)/.test(JS),
+);
+
+// ── Ручной размер рамки (ширина/высота в пикселях) ──────────────────────────
+check(
+  "Python: размер рамки — INT-опции сразу под координатами",
+  /"center_y":[\s\S]{0,900}?"frame_w":\s*\(\s*"INT"/.test(PY) &&
+    /"frame_h":\s*\(\s*"INT"/.test(PY),
+);
+check(
+  "JS: размер рамки считается в пикселях источника (frameWithSize)",
+  /export function frameWithSize\(/.test(JS) &&
+    /frameWithSize\(state\.frac, state\.img\.w, state\.img\.h, size, axis, effectiveRatio\(\)\)/.test(JS),
+);
+check(
+  "JS: размер пишется в нативные виджеты тихо (frame_w/frame_h)",
+  /widgetByName\(node,\s*'frame_w'\)/.test(JS) &&
+    /widgetByName\(node,\s*'frame_h'\)/.test(JS) &&
+    /setWidgetValueQuiet\(frameWWidget, Math\.round\(r\.w\)\)/.test(JS) &&
+    /setWidgetValueQuiet\(frameHWidget, Math\.round\(r\.h\)\)/.test(JS),
+);
+check(
+  "JS: правка размера двигает рамку (applySize → frameWithSize)",
+  /function applySize\([\s\S]{0,400}?frameWithSize\(/.test(JS) &&
+    /widget\.callback\s*=\s*\(\.\.\.args\)[\s\S]{0,600}?applySize\(axis,/.test(JS),
+);
+check(
+  "JS: мегапиксели НЕ отключаются при ручном размере (размер выхода = MP + пропорции)",
+  !/megapixelsWidget\.disabled\s*=\s*true/.test(JS) &&
+    !/mpWidget\.disabled\s*=\s*true/.test(JS),
 );
 
 // ── Итог ───────────────────────────────────────────────────────────────────

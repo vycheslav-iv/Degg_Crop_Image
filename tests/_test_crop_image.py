@@ -459,6 +459,16 @@ check("lock_ratio подписи EN-источник", _lock.get("label_on") == 
 _cx = types["required"]["center_x"][1]
 _cy = types["required"]["center_y"][1]
 check(
+    "frame_w/frame_h — INT (размер рамки в пикселях)",
+    types["required"]["frame_w"][0] == "INT"
+    and types["required"]["frame_h"][0] == "INT"
+    and types["required"]["frame_w"][1]["step"] == 1
+    and types["required"]["frame_h"][1]["step"] == 1
+    and types["required"]["frame_w"][1]["min"] == 0
+    and types["required"]["frame_h"][1]["min"] == 0,
+    {"frame_w": types["required"]["frame_w"][1], "frame_h": types["required"]["frame_h"][1]},
+)
+check(
     "center_x/center_y — INT со знаком (смещение в пикселях)",
     types["required"]["center_x"][0] == "INT"
     and types["required"]["center_y"][0] == "INT"
@@ -478,6 +488,8 @@ EXPECTED_WIDGET_ORDER = [
     "lock_ratio",
     "center_x",
     "center_y",
+    "frame_w",
+    "frame_h",
     "aspect_ratio",
     "megapixels",
     "multiplicity",

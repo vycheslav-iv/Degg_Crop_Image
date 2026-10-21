@@ -311,6 +311,28 @@ class DeggCropImage:
                         "tooltip": "Vertical offset of the frame centre from the image centre, in pixels.",
                     },
                 ),
+                "frame_w": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 100000,
+                        "step": 1,
+                        "tooltip": "Width of the crop region in source pixels. "
+                        "0 keeps the current frame size.",
+                    },
+                ),
+                "frame_h": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 100000,
+                        "step": 1,
+                        "tooltip": "Height of the crop region in source pixels. "
+                        "0 keeps the current frame size.",
+                    },
+                ),
                 "aspect_ratio": (
                     ASPECT_RATIOS,
                     {
@@ -396,6 +418,8 @@ class DeggCropImage:
         lock_ratio=True,
         center_x=0,
         center_y=0,
+        frame_w=0,
+        frame_h=0,
         dim_outside=50,
         multiplicity=8,
         megapixels=2.0,
