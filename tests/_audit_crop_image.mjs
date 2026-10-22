@@ -444,9 +444,10 @@ check(
 // ComfyUI рисует обязательные входы первыми, а «интерфейсные» (необязательные)
 // — после, поэтому порядок на теле ноды задаёт редактор.
 const WIDGET_ORDER_EXPECTED = [
+  "image_file", "upload_file", "preview",
   "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
   "megapixels", "multiplicity", "resample", "fill", "dim_outside", "golden_ratio",
-  "crop_rect", "output_size", "image_file",
+  "crop_rect", "output_size",
 ];
 const orderBlock = (JS.slice(JS.indexOf("const WIDGET_ORDER = [")).split("];")[0] || "");
 const orderFound = [...orderBlock.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
@@ -456,15 +457,31 @@ check(
   orderFound.join(","),
 );
 check(
-  "JS: виджеты переставляются по WIDGET_ORDER (превью — первым)",
-  /node\.widgets\.length = 0;[\s\S]{0,120}?node\.widgets\.push\(widget, \.\.\.rest\)/.test(JS) &&
-    /WIDGET_ORDER\.indexOf\(a\?\.name\)/.test(JS),
+  "JS: виджеты переставляются по WIDGET_ORDER (файл — вверху, над превью)",
+  /node\.widgets\.length = 0;[\s\S]{0,120}?node\.widgets\.push\(\.\.\.ordered\)/.test(JS) &&
+    /WIDGET_ORDER\.indexOf\(a\?\.name\)/.test(JS) &&
+    // порядок в WIDGET_ORDER: выбор файла и кнопка загрузки — первыми,
+    // превью — следом (в нём лежат кнопки «Вписать / По центру / Сбросить»)
+    WIDGET_ORDER_EXPECTED.indexOf("image_file") === 0 &&
+    WIDGET_ORDER_EXPECTED.indexOf("upload_file") === 1 &&
+    WIDGET_ORDER_EXPECTED.indexOf("preview") === 2,
+);
+check(
+  "JS: кнопка загрузки файла — нативный виджет с загрузкой на сервер",
+  /addWidget\(\s*'button',\s*'upload_file'/.test(JS) &&
+    /\/upload\/image/.test(JS) &&
+    /body\.append\('image', file\)/.test(JS) &&
+    /target\.options\?\.values/.test(JS),
 );
 check(
   "JS: значения виджетов восстанавливаются по ИМЕНАМ (фронтенд — позиционно)",
   /function restoreWidgetValuesByName\(info\)[\s\S]{0,700}?widgets_values_named/.test(JS) &&
     /restoreWidgetValuesByName\(info\)/.test(JS) &&
     /function sanitizeWidgetValues\(\)/.test(JS),
+);
+check(
+  "JS: значение комбо-файла приводится к строке (старые воркфлои)",
+  /function sanitizeWidgetValues\(\)[\s\S]{0,600}?'image_file'[\s\S]{0,400}?typeof file\.value !== 'string'/.test(JS),
 );
 const optionalSource = PY.slice(PY.indexOf('"optional": {'));
 const optionalHas = (name) => optionalSource.indexOf(`"${name}"`) >= 0;

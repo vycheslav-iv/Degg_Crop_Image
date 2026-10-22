@@ -19,6 +19,11 @@ const NODE_CLASS = 'DeggCropImage';
 // Порядок виджетов на теле ноды. ComfyUI рисует обязательные входы первыми, а
 // «интерфейсные» (необязательные) — после, поэтому порядок задаёт редактор.
 const WIDGET_ORDER = [
+  // Выбор файла и кнопка загрузки — в самом верху ноды, над кнопками
+  // «Вписать / По центру / Сбросить» (они лежат внутри превью).
+  'image_file',
+  'upload_file',
+  'preview',
   'lock_ratio',
   'center_x',
   'center_y',
@@ -36,7 +41,6 @@ const WIDGET_ORDER = [
   // и новый виджет в начале списка сдвинул бы все значения на шаг.
   'crop_rect',
   'output_size',
-  'image_file',
 ];
 const CSS_ID = 'degg-crop-image-css';
 const MIN_H = 180;
@@ -95,6 +99,7 @@ const LABELS = {
     fit: 'Вписать',
     center: 'По центру',
     reset: 'Сбросить',
+    upload: 'Загрузить файл',
     empty: 'Подключите изображение',
     fitTip: 'Вписать рамку в границы изображения, сохранив пропорции, и поставить по центру',
     centerTip: 'Поставить рамку по центру изображения, не меняя размер',
@@ -126,6 +131,7 @@ const LABELS = {
     fit: 'Fit',
     center: 'Center',
     reset: 'Reset',
+    upload: 'Upload file',
     empty: 'Connect an image',
     fitTip: 'Fit the frame to the image bounds, keep proportions, then center',
     centerTip: 'Center the frame on the image without changing its size',
@@ -489,6 +495,10 @@ function locale() {
 
 function labels() {
   return locale().startsWith('ru') ? LABELS.ru : LABELS.en;
+}
+
+function apiUrl(path) {
+  return typeof api?.apiURL === 'function' ? api.apiURL(path) : path;
 }
 
 function setOptionLabels(widget, map) {
@@ -1439,6 +1449,58 @@ function createEditor(node, widget) {
   });
   helpBox.addEventListener('pointerdown', (event) => event.stopPropagation());
 
+  // ── ЗАГРУЗКА ФАЙЛА ────────────────────────────────────────────────────────
+  // Фронтенд рисует иконку загрузки прямо в комбо выбора файла, но без
+  // подписи её легко не заметить. Поэтому рядом с комбо есть собственная
+  // кнопка «Загрузить файл» (нативный виджет-кнопка LiteGraph) — она
+  // выбирает файл, отправляет его в папку input и подставляет имя файла
+  // в комбо.
+  function setFileValue(value) {
+    const target = widgetByName(node, 'image_file');
+    if (!target) return;
+    const values = target.options?.values;
+    if (Array.isArray(values) && !values.includes(value)) values.push(value);
+    target.value = value;
+    target.callback?.(value, app.canvas, node);
+  }
+
+  async function uploadFile(file) {
+    try {
+      const body = new FormData();
+      body.append('image', file);
+      body.append('overwrite', 'false');
+      body.append('type', 'input');
+      const response = await fetch(apiUrl('/upload/image'), { method: 'POST', body });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const name = data?.name || file.name;
+      const subfolder = data?.subfolder || '';
+      setFileValue(subfolder ? `${subfolder}/${name}` : name);
+    } catch (error) {
+      console.warn('[DeggCropImage] не удалось загрузить файл:', error);
+    }
+  }
+
+  const uploadButton = node.addWidget(
+    'button',
+    'upload_file',
+    null,
+    () => {
+      const picker = document.createElement('input');
+      picker.type = 'file';
+      picker.accept = 'image/*';
+      picker.onchange = () => {
+        const file = picker.files?.[0];
+        if (file) uploadFile(file);
+      };
+      picker.click();
+    },
+    {
+      serialize: false,
+      surfaces: { canvas: 'shown', vueNode: 'shown', panel: 'never' },
+    },
+  );
+
   // ── ЯЗЫК ────────────────────────────────────────────────────────────────
   // Язык берётся из Comfy.Locale при создании ноды и переприменяется при смене
   // настройки — без перезапуска ComfyUI. Значения combo (протокол) не трогаем.
@@ -1452,6 +1514,7 @@ function createEditor(node, widget) {
       }
     }
     empty.textContent = t.empty;
+    if (uploadButton) uploadButton.label = t.upload;
     renderHelp();
     setOptionLabels(aspectWidget, t.aspect);
     setOptionLabels(fillWidget, t.fill);
@@ -1610,6 +1673,14 @@ function createEditor(node, widget) {
   // Подстраховка: если значения приехалиpositional-и с чужими типами (старый
   // воркфлоу без именованной карты), приводим их к корректным.
   function sanitizeWidgetValues() {
+    // Комбо выбора файла: в старых воркфлою (без именованной карты значений)
+    // фронтенд восстанавливает значения позиционно, и в комбо могло попасть
+    // значение чужого виджета (например, булево от «фиксации пропорций»).
+    const file = widgetByName(node, 'image_file');
+    if (file && typeof file.value !== 'string') {
+      const values = file.options?.values;
+      file.value = Array.isArray(values) && values.length ? values[0] : '';
+    }
     const aspect = widgetByName(node, 'aspect_ratio');
     if (aspect && !Object.prototype.hasOwnProperty.call(RATIO_VALUES, aspect.value)) {
       aspect.value = 'free';
@@ -1676,6 +1747,7 @@ function createEditor(node, widget) {
     commit,
     state,
     desiredHeight,
+    uploadFile,
   };
 }
 
@@ -1708,15 +1780,16 @@ function setupNode(node) {
   const editor = createEditor(node, widget);
   container.appendChild(editor.widget);
 
-  // Превью — первым, остальные — по WIDGET_ORDER.
-  const rest = (node.widgets || []).filter((w) => w !== widget);
-  rest.sort((a, b) => {
+  // Порядок задаёт WIDGET_ORDER: выбор файла и кнопка загрузки — вверху,
+  // следом превью (с кнопками «Вписать / По центру / Сбросить»), потом
+  // остальные виджеты. Виджеты, которых нет в списке, уходят в конец.
+  const ordered = (node.widgets || []).slice().sort((a, b) => {
     const ia = WIDGET_ORDER.indexOf(a?.name);
     const ib = WIDGET_ORDER.indexOf(b?.name);
     return (ia < 0 ? WIDGET_ORDER.length : ia) - (ib < 0 ? WIDGET_ORDER.length : ib);
   });
   node.widgets.length = 0;
-  node.widgets.push(widget, ...rest);
+  node.widgets.push(...ordered);
 
   node.__deggCrop = editor;
   node.setDirtyCanvas?.(true, true);

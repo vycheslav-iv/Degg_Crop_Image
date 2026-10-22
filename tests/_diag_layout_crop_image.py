@@ -167,6 +167,30 @@ async def main() -> int:
 
             # C) проверяем, что виджет вообще умеет расти: задаём его
             #    computeLayoutSize так, чтобы минимум был 0, и смотрим
+            print("U) загрузка файла:", json.dumps(await cdp.eval(
+                """(async () => {
+  const n = window.__diag;
+  const editor = n.__deggCrop;
+  if (!editor || typeof editor.uploadFile !== 'function') {
+    return { ok: false, why: 'no uploadFile', keys: editor ? Object.keys(editor) : null };
+  }
+  try {
+    const res = await fetch('/view?filename=example.png&type=input');
+    if (!res.ok) return { ok: false, why: 'source ' + res.status };
+    const blob = await res.blob();
+    const file = new File([blob], 'degg-upload-check.png', { type: 'image/png' });
+    await editor.uploadFile(file);
+    await new Promise((r) => setTimeout(r, 800));
+    const combo = (n.widgets || []).find((x) => x.name === 'image_file');
+    const values = combo && combo.options && combo.options.values;
+    return { ok: true, value: combo ? String(combo.value || '') : '',
+      values: Array.isArray(values) ? values.slice(-3) : null,
+      apiUrl: typeof window.comfyAPI, ns: Object.keys(window.comfyAPI || {}) };
+  } catch (e) {
+    return { ok: false, why: String(e && e.message || e) };
+  }
+})()"""
+            ), ensure_ascii=False))
             print("E) DOM комбо-файла:", json.dumps(await cdp.eval(
                 "(() => { const n = window.__diag;"
                 " const w = (n.widgets || []).find((x) => x.name === 'image_file');"

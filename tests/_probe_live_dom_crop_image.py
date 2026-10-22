@@ -323,9 +323,12 @@ async def main() -> int:
             # Порядок виджетов на теле ноды (снизу вверх в UI — как в INPUT_TYPES).
             order = await cdp.eval(
                 "(() => (window.__probeCrop.widgets || []).map((w) => w.name)"
-                ".filter((n) => n !== 'preview' && n !== 'crop_rect' && n !== 'output_size'))()"
+                ".filter((n) => n !== 'crop_rect' && n !== 'output_size'))()"
             )
             expected_order = [
+                "image_file",
+                "upload_file",
+                "preview",
                 "lock_ratio",
                 "center_x",
                 "center_y",
@@ -338,7 +341,6 @@ async def main() -> int:
                 "fill",
                 "dim_outside",
                 "golden_ratio",
-                "image_file",
             ]
             check("порядок виджетов как в задании", order == expected_order, order)
 
@@ -416,6 +418,20 @@ async def main() -> int:
                 " return { found: true, value: w.value, upFile, count: vals.length }; })()"
             )
             check("виджет выбора файла есть на ноде", (file_state or {}).get("found") is True, file_state)
+            upload_state = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const b = (n.widgets || []).find((x) => x.name === 'upload_file');"
+                " if (!b) return { found: false };"
+                " return { found: true, type: b.type, label: b.label || b.value || '',"
+                "   serialize: b.serialize }; })()"
+            )
+            check(
+                "кнопка загрузки файла есть на ноде и подписана",
+                (upload_state or {}).get("found") is True
+                and (upload_state or {}).get("type") == "button"
+                and bool((upload_state or {}).get("label")),
+                upload_state,
+            )
             check(
                 "список файлов input подхвачен комбо",
                 int((file_state or {}).get("count") or 0) > 0,
@@ -441,6 +457,32 @@ async def main() -> int:
                 not file_after.get("emptyVisible"),
                 file_after.get("emptyVisible"),
             )
+            # Сквозная проверка кнопки загрузки: файл уходит на сервер
+            # (/upload/image), имя подставляется в комбо, картинка видна.
+            uploaded = await cdp.eval(
+                """(async () => {
+  const n = window.__probeCrop;
+  const editor = n.__deggCrop;
+  if (!editor || typeof editor.uploadFile !== 'function') return { ok: false, why: 'no uploadFile' };
+  const res = await fetch('/view?filename=example.png&type=input');
+  if (!res.ok) return { ok: false, why: 'no source' };
+  const blob = await res.blob();
+  const file = new File([blob], 'degg-upload-check.png', { type: 'image/png' });
+  await editor.uploadFile(file);
+  await new Promise((r) => setTimeout(r, 600));
+  const combo = (n.widgets || []).find((x) => x.name === 'image_file');
+  const src = n.__deggCrop.widget.querySelector('.degg-crop__img').getAttribute('src') || '';
+  return { ok: true, value: combo ? String(combo.value || '') : '', src };
+})()""",
+                await_promise=True,
+            )
+            check(
+                "загрузка файла кнопкой: файл ушёл на сервер и подставился в комбо",
+                (uploaded or {}).get("ok") is True
+                and bool((uploaded or {}).get("value"))
+                and (uploaded or {}).get("value") in ((uploaded or {}).get("src") or ""),
+                uploaded,
+            )
             # Обратно: сокет снова главный — превью берётся из подключения.
             await cdp.eval(
                 "(() => { const c = window.__probeCrop, l = window.__probeLoad;"
@@ -448,6 +490,12 @@ async def main() -> int:
             )
             await asyncio.sleep(1.0)
             back = await cdp.eval(STATE_JS)
+            check(
+                "после загрузки превью показывает загруженный файл",
+                bool((uploaded or {}).get("value"))
+                and (uploaded or {}).get("value") in ((uploaded or {}).get("src") or ""),
+                uploaded,
+            )
             check(
                 "после возврата сокета превью снова из подключения",
                 bool(up_file)
@@ -1806,6 +1854,20 @@ async def main() -> int:
             real = [e for e in (errors or []) if "example.png" not in e and "favicon" not in e]
             check("консоль без ошибок", not real, real[:3])
     finally:
+        # Уборка: файл, загруженный сквозной проверкой, не должен оставаться
+        # в папке input.
+        for folder in (
+            Path(r"D:\ComfyUI_windows_portable\ComfyUI\input"),
+            Path(r"D:\ComfyUI_windows_portable\ComfyUI\input\degg-upload-check.png"),
+        ):
+            try:
+                if folder.is_file():
+                    folder.unlink()
+                elif folder.is_dir():
+                    for item in folder.glob("degg-upload-check*"):
+                        item.unlink()
+            except Exception:
+                pass
         chrome.terminate()
         try:
             chrome.wait(timeout=10)
