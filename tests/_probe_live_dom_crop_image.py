@@ -550,6 +550,10 @@ async def main() -> int:
                 " if (!editor || !file) return { ok: false };"
                 " editor.value = 'clipspace-painted-masked-1.png [input]';"
                 " editor.callback && editor.callback(editor.value, app.canvas, n);"
+                " const locator = String(n.id);"
+                " app.nodeOutputs[locator] = { images: [{ filename:"
+                "   'clipspace-painted-masked-1.png', subfolder: '', type: 'input' }] };"
+                " n.imgs = undefined;"
                 " return { ok: true, file: file.value,"
                 "   layer: (n.__deggCrop.widget.querySelector('.degg-crop__masklayer') || {}).src || '' }; })()"
             )
@@ -560,6 +564,23 @@ async def main() -> int:
                 mask_flow,
             )
             await asyncio.sleep(0.8)
+            mask_cleanup = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const locator = String(n.id);"
+                " const out = app.nodeOutputs[locator];"
+                " return { imgs: (n.imgs || []).length,"
+                "   outputs: out ? (out.images || []).length : 0 }; })()"
+            )
+            check(
+                "Mask Editor: «выходная картинка» убрана (под нодой нет второго превью)",
+                int((mask_cleanup or {}).get("outputs") or 0) == 0,
+                mask_cleanup,
+            )
+            check(
+                "Mask Editor: node.imgs восстановлен (штатные точки входа живы)",
+                int((mask_cleanup or {}).get("imgs") or 0) >= 1,
+                mask_cleanup,
+            )
             mask_layer = await cdp.eval(
                 "(() => { const n = window.__probeCrop;"
                 " const el = n.__deggCrop.widget.querySelector('.degg-crop__masklayer');"

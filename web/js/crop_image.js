@@ -1552,6 +1552,20 @@ function createEditor(node, widget) {
       target.value = next;
       target.callback?.(next, app.canvas, node);
       layout();
+      // Редактор после сохранения подставляет ноде «выходную картинку»
+      // (replaceNodeOutputImages) — под нодой появляется второе превью.
+      // Наш callback вызывается ДО подстановки, поэтому убираем её следующим
+      // тиком и возвращаем node.imgs (редактор его сбрасывает — без него
+      // нода перестаёт быть «картинкой» и штатные точки входа исчезают).
+      setTimeout(() => {
+        try {
+          delete app.nodeOutputs[locatorIdFor(node)];
+        } catch {
+          /* ignore: the output map may not be ready */
+        }
+        node.imgs = [image];
+        node.setDirtyCanvas?.(true, true);
+      }, 0);
     },
     {
       serialize: true,

@@ -52,6 +52,12 @@
   именем) и перенос значения в вход `mask_file`. Своих кнопок «Маска» нет:
   `node.imgs = [image]` делает ноду «картинкой» для фронтенда (`isImageNode`),
   и он показывает штатные точки входа.
+  После сохранения маски нода удаляет подставленную редактором
+  «выходную картинку» (`delete app.nodeOutputs[locatorIdFor(node)]` —
+  app.nodeOutputs это Proxy над стором, delete ⇒ removeOutputFromLegacy)
+  и возвращает `node.imgs`: иначе под нодой рисуется ВТОРОЕ превью, а
+  нода перестаёт быть «картинкой» (исчезают штатные точки входа).
+  Чистка отложена на тик: наш callback вызывается ДО подстановки.
 - `crop_image.py:484` вход `mask_file` (скрытый) — файл с маской из Mask Editor;
   `crop_image.py:629` приоритет маски: вход `mask` → `mask_file` → альфа файла.
 - `web/js/crop_image.js:1458/1467` `setFileValue()` / `uploadFile()` — загрузка
@@ -85,6 +91,10 @@
 - **Превью перестало расти с нодой после правок** — оказалось, что ломает не
   код, а сама проба: нода увеличена, а проверка ресайзила её в меньшую
   сторону. Диагностика: `tests/_diag_layout_crop_image.py`.
+- **Под нодой появилось второе превью после сохранения маски** — Mask Editor
+  подставляет ноде «выходную картинку» (`replaceNodeOutputImages`), и
+  фронтенд рисует её под нодой. Лечение: удалить запись из
+  `app.nodeOutputs` (Proxy над стором) и вернуть `node.imgs`.
 
 ## 4. Что важно не сломать при продолжении работы
 
@@ -135,7 +145,7 @@
   §8 решения пользователя, §9 режим файла и §9.4 Mask Editor), `README.md`,
   `SESSION_MEMORY.md`.
 - Проверки: `tests/_test_crop_image.py` (108), `tests/_smoke_crop_image.mjs` (82),
-  `tests/_audit_crop_image.mjs` (176), `tests/_probe_live_dom_crop_image.py` (121,
+  `tests/_audit_crop_image.mjs` (177), `tests/_probe_live_dom_crop_image.py` (124,
   живая), `tests/_check_file_mode.py`, `tests/_check_mask_file.py`,
   `tests/_check_real_mask.py`, `tests/_check_image_size.py` (серверные),
   `tests/_diag_layout_crop_image.py` (диагностика раскладки),
