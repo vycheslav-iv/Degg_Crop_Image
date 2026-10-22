@@ -105,7 +105,7 @@ def run_prompt(prompt: dict) -> Path | None:
         prompt_id = json.load(resp)["prompt_id"]
     print("prompt_id:", prompt_id)
 
-    deadline = time.time() + 120
+    deadline = time.time() + 240  # очередь может быть занята предыдущими прогонами
     history = {}
     while time.time() < deadline:
         time.sleep(2)
