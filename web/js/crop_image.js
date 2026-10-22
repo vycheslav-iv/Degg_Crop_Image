@@ -23,7 +23,6 @@ const WIDGET_ORDER = [
   // «Вписать / По центру / Сбросить» (они лежат внутри превью).
   'image_file',
   'upload_file',
-  'mask_editor',
   'preview',
   'lock_ratio',
   'center_x',
@@ -1533,27 +1532,11 @@ function createEditor(node, widget) {
   // ноды должен быть такой виджет. Он скрыт: это служебный канал, а не
   // элемент управления.
   //
-  // Чтобы редактор открылся, ноде нужна картинка: фронтенд требует
-  // node.imgs (как у LoadImage) — выдаём ему наш <img> из превью.
-  function openMaskEditor() {
-    const appClass = app?.constructor;
-    if (!appClass) return;
-    appClass.clipspace_return_node = node;
-    if (typeof appClass.open_maskeditor === 'function') {
-      appClass.open_maskeditor();
-    }
-  }
-
-  const maskButton = node.addWidget(
-    'button',
-    'mask_editor',
-    null,
-    () => openMaskEditor(),
-    {
-      serialize: false,
-      surfaces: { canvas: 'shown', vueNode: 'shown', panel: 'never' },
-    },
-  );
+  // Своей кнопки «Маска» нет: нода отдаёт фронтенду node.imgs (как у
+  // LoadImage), благодаря чему isImageNode() считает её картинкой, и
+  // фронтенд сам показывает штатные точки входа — «Open in MaskEditor» в
+  // контекстном меню ноды и кнопку маски в панели выбора.
+  //
 
   // Значение, которое записал Mask Editor: «имя.png [input]». Переносим его в
   // вход mask_file — по нему сервер прочитает файл и возьмёт маску из альфы.
@@ -1592,7 +1575,9 @@ function createEditor(node, widget) {
     },
     {
       serialize: false,
-      surfaces: { canvas: 'shown', vueNode: 'shown', panel: 'never' },
+      // В Nodes 2.0 загрузка файла — штатная иконка-папка внутри комбо,
+      // поэтому кнопка нужна только в старом (legacy) фронтенде.
+      surfaces: { canvas: 'shown', vueNode: 'never', panel: 'never' },
     },
   );
 
@@ -1610,7 +1595,6 @@ function createEditor(node, widget) {
     }
     empty.textContent = t.empty;
     if (uploadButton) uploadButton.label = t.upload;
-    if (maskButton) maskButton.label = t.mask;
     renderHelp();
     setOptionLabels(aspectWidget, t.aspect);
     setOptionLabels(fillWidget, t.fill);

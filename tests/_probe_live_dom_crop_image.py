@@ -328,7 +328,6 @@ async def main() -> int:
             expected_order = [
                 "image_file",
                 "upload_file",
-                "mask_editor",
                 "preview",
                 "lock_ratio",
                 "center_x",
@@ -519,11 +518,28 @@ async def main() -> int:
                 mask_state,
             )
             check(
-                "Mask Editor: кнопка «Маска» есть на ноде и подписана",
-                (mask_state or {}).get("btnFound") is True
-                and (mask_state or {}).get("btnType") == "button"
-                and bool((mask_state or {}).get("btnLabel")),
+                "Mask Editor: своей кнопки «Маска» нет (штатные точки входа)",
+                (mask_state or {}).get("btnFound") is False,
                 mask_state,
+            )
+            # Штатные точки входа фронтенда: нода с node.imgs считается
+            # картинкой (isImageNode), и в контекстном меню ноды появляется
+            # «Open in MaskEditor».
+            standard = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const menu = [];"
+                " try { n.getExtraMenuOptions(app.canvas, menu); }"
+                " catch (e) { return { ok: false, why: String(e && e.message || e) }; }"
+                " const labels = menu.map((m) => String(m.content || ''));"
+                " return { ok: true, labels,"
+                "   hasMask: labels.some((t) => /mask/i.test(t)),"
+                "   hasImage: labels.some((t) => /open image/i.test(t)) }; })()"
+            )
+            check(
+                "Mask Editor: в контекстном меню ноды есть штатный пункт маски",
+                (standard or {}).get("ok") is True
+                and (standard or {}).get("hasMask") is True,
+                standard,
             )
             # Значение, которое записал бы Mask Editor, должно доехать до входа
             # mask_file (по нему сервер возьмёт маску из альфы файла).
@@ -1929,12 +1945,21 @@ async def main() -> int:
             )
             check("сетка: выключается флажком", (golden_off or {}).get("visible") is False, golden_off)
 
-            # Кнопка «Маска» открывает штатный Mask Editor на нашей ноде.
+            # Штатный путь: команда «Open Mask Editor for Selected Node».
             await cdp.eval(
                 "(() => { const n = window.__probeCrop;"
-                " const b = (n.widgets || []).find((x) => x.name === 'mask_editor');"
-                " if (b && b.callback) b.callback('mask', app.canvas, n);"
+                " app.canvas.selectNodes([n]);"
                 " return 1; })()"
+            )
+            await asyncio.sleep(0.3)
+            await cdp.eval(
+                "(() => { const c = window.comfyAPI?.app?.app?.commandStore;"
+                " if (c && typeof c.execute === 'function') {"
+                "   c.execute('Comfy.MaskEditor.OpenMaskEditor'); return 1; }"
+                " const A = app.constructor;"
+                " A.clipspace_return_node = window.__probeCrop;"
+                " if (typeof A.open_maskeditor === 'function') A.open_maskeditor();"
+                " return 2; })()"
             )
             await asyncio.sleep(2.0)
             editor_state = await cdp.eval(

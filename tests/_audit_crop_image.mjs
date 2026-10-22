@@ -448,7 +448,7 @@ check(
 // ComfyUI рисует обязательные входы первыми, а «интерфейсные» (необязательные)
 // — после, поэтому порядок на теле ноды задаёт редактор.
 const WIDGET_ORDER_EXPECTED = [
-  "image_file", "upload_file", "mask_editor", "preview",
+  "image_file", "upload_file", "preview",
   "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
   "megapixels", "multiplicity", "resample", "fill", "dim_outside", "golden_ratio",
   "crop_rect", "output_size", "mask_file", "image",
@@ -468,18 +468,25 @@ check(
     // превью — следом (в нём лежат кнопки «Вписать / По центру / Сбросить»)
     WIDGET_ORDER_EXPECTED.indexOf("image_file") === 0 &&
     WIDGET_ORDER_EXPECTED.indexOf("upload_file") === 1 &&
-    WIDGET_ORDER_EXPECTED.indexOf("mask_editor") === 2 &&
-    WIDGET_ORDER_EXPECTED.indexOf("preview") === 3,
+    WIDGET_ORDER_EXPECTED.indexOf("preview") === 2,
 );
 check(
-  "JS: штатный Mask Editor: служебный виджет image + кнопка + node.imgs",
+  "JS: штатный Mask Editor: служебный виджет image + node.imgs",
   // Фронтенд пишет результат рисования в виджет с именем 'image'
   /addWidget\(\s*'string',\s*'image'/.test(JS) &&
-    /open_maskeditor/.test(JS) &&
     /node\.imgs = \[image\]/.test(JS) &&
     /widgetByName\(node, 'mask_file'\)/.test(JS) &&
     // маска из файла показывается в превью отдельным слоем
     /paintedMaskUrl/.test(JS) && /degg-crop__masklayer/.test(JS),
+);
+check(
+  "JS: своих кнопок «Маска» и «Загрузить файл» в Nodes 2.0 нет",
+  // кнопка «Маска» не делается — работают штатные точки входа фронтенда
+  !/addWidget\(\s*'button',\s*'mask_editor'/.test(JS) &&
+    !/open_maskeditor/.test(JS) &&
+    // кнопка загрузки — только legacy: в Nodes 2.0 загрузка идёт иконкой-папкой
+    // внутри комбо (image_upload → WidgetSelect)
+    /surfaces: \{ canvas: 'shown', vueNode: 'never', panel: 'never' \}/.test(JS),
 );
 check(
   "Python: маска из файла Mask Editor (mask_file) — необязательный вход",
