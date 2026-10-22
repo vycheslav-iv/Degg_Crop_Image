@@ -135,6 +135,20 @@ async def main() -> int:
 
             await cdp.eval(
                 """(() => {
+  window.__diagErrors = [];
+  window.addEventListener('error', (e) => {
+    window.__diagErrors.push(String((e.error && e.error.stack) || e.message));
+  });
+  const origError = console.error;
+  console.error = (...args) => {
+    window.__diagErrors.push(args.map((a) => String(a && a.stack || a)).join(' '));
+    origError.apply(console, args);
+  };
+  return 1;
+})()"""
+            )
+            await cdp.eval(
+                """(() => {
   const g = app.graph;
   const crop = LiteGraph.createNode('DeggCropImage');
   crop.pos = [200, 200];
@@ -149,6 +163,8 @@ async def main() -> int:
 })()"""
             )
             await asyncio.sleep(1.5)
+            errors = await cdp.eval("window.__diagErrors || []")
+            print("ОШИБКИ КОНСОЛИ:", json.dumps(errors, ensure_ascii=False)[:1500])
             print("A) как есть:", json.dumps(await cdp.eval(DUMP), ensure_ascii=False))
             await cdp.eval("(() => { window.__diag.setSize([600, 1200]); return 1; })()")
             await asyncio.sleep(1.2)

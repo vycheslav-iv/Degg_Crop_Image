@@ -182,9 +182,21 @@ check(
     /function resetToImage\(\)[\s\S]{0,700}?snapSize\(\{ w: state\.img\.w, h: state\.img\.h \}/.test(JS),
 );
 check(
+  "JS: служебный виджет image следует за текущим источником (Mask Editor)",
+  // Фронтенд берёт картинку для Mask Editor из виджета image — там должен
+  // лежать текущий источник, а не результат прошлой покраски.
+  /function currentSourceRef\(\)/.test(JS) &&
+    /function syncMaskEditorSource\(\)/.test(JS) &&
+    /if \(isNewImage\) syncMaskEditorSource\(\)/.test(JS) &&
+    // результат покраски распознаётся по имени файла редактора
+    /clipspace-painted-masked-/.test(JS) &&
+    // в виджет image пишет только редактор
+    /if \(!\/clipspace-painted-masked-\/i\.test\(text\)\) return;/.test(JS),
+);
+check(
   "JS: «Сбросить» и новая картинка ведут в одну операцию (resetToImage)",
   /buttonEls\.reset[\s\S]{0,300}?resetToImage\(\)/.test(JS) &&
-    /image\.onload[\s\S]{0,900}?isNewImage && !restoring[\s\S]{0,200}?resetToImage\(\)/.test(JS),
+    /image\.onload[\s\S]{0,1800}?isNewImage && !restoring[\s\S]{0,200}?resetToImage\(\)/.test(JS),
 );
 check(
   "JS: восстановление воркфлоу рамку не сбрасывает (флаг restoring)",

@@ -60,6 +60,14 @@
   Чистка отложена на тик: наш callback вызывается ДО подстановки.
 - `crop_image.py:484` вход `mask_file` (скрытый) — файл с маской из Mask Editor;
   `crop_image.py:629` приоритет маски: вход `mask` → `mask_file` → альфа файла.
+- `web/js/crop_image.js:1598 currentSourceRef()` / `syncMaskEditorSource()` —
+  служебный виджет `image` держит ТЕКУЩИЙ источник (имя файла в режиме файла,
+  пусто в режиме сокета ⇒ фронтенд берёт node.imgs). Вызывается при смене
+  картинки (`if (isNewImage) syncMaskEditorSource()`). ⛔ без этого Mask Editor
+  открывается со СТАРОЙ картинкой (баг пользователя 2026-10-22): фронтенд при
+  открытии редактора берёт картинку из виджета `image`
+  (`useMaskEditorLoader`), а туда попадал результат прошлой покраски.
+  Результат покраски опознаётся по префиксу `clipspace-painted-masked-`.
 - Маска **не зависит от способа подачи источника**: Mask Editor рисует по тому,
   что сейчас в превью (картинка из кабеля ИЛИ файл), результат — отдельный
   файл, сервер применяет его к любому источнику. Проверено обоими сценариями
@@ -99,6 +107,12 @@
   подставляет ноде «выходную картинку» (`replaceNodeOutputImages`), и
   фронтенд рисует её под нодой. Лечение: удалить запись из
   `app.nodeOutputs` (Proxy над стором) и вернуть `node.imgs`.
+- **Mask Editor открывался со старой картинкой** (жалоба пользователя) —
+  фронтенд при ОТКРЫТИИ редактора берёт картинку из виджета `image`
+  (`useMaskEditorLoader`: «the node image might be stale … while the widget value
+  reflects the current selection»), а в нашем служебном виджете лежал
+  результат прошлой покраски. Лечение: виджет `image` держит текущий источник,
+  результат редактора опознаём по префиксу `clipspace-painted-masked-`.
 
 ## 4. Что важно не сломать при продолжении работы
 
@@ -149,7 +163,7 @@
   §8 решения пользователя, §9 режим файла и §9.4 Mask Editor), `README.md`,
   `SESSION_MEMORY.md`.
 - Проверки: `tests/_test_crop_image.py` (108), `tests/_smoke_crop_image.mjs` (82),
-  `tests/_audit_crop_image.mjs` (177), `tests/_probe_live_dom_crop_image.py` (124,
+  `tests/_audit_crop_image.mjs` (178), `tests/_probe_live_dom_crop_image.py` (126,
   живая), `tests/_check_file_mode.py`, `tests/_check_mask_file.py`,
   `tests/_check_real_mask.py`, `tests/_check_image_size.py` (серверные),
   `tests/_diag_layout_crop_image.py` (диагностика раскладки),

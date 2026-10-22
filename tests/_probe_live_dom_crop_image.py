@@ -454,6 +454,22 @@ async def main() -> int:
             )
             await asyncio.sleep(1.2)
             file_after = await cdp.eval(STATE_JS)
+            # Источник для штатного Mask Editor лежит в служебном виджете image.
+            # После смены файла он должен указывать на НОВЫЙ файл, иначе
+            # редактор откроется со старой картинкой (результат прошлой покраски).
+            source_ref = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const ed = (n.widgets || []).find((x) => x.name === 'image');"
+                " const file = (n.widgets || []).find((x) => x.name === 'image_file');"
+                " return { image: ed ? String(ed.value || '') : null,"
+                "   file: file ? String(file.value || '') : '' }; })()"
+            )
+            check(
+                "Mask Editor: после смены файла служебный виджет указывает на новый файл",
+                bool((source_ref or {}).get("file"))
+                and (source_ref or {}).get("image") == (source_ref or {}).get("file"),
+                source_ref,
+            )
             check(
                 "без сокета превью показывает выбранный файл",
                 bool((file_state or {}).get("value"))

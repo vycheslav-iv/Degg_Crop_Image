@@ -1251,6 +1251,10 @@ function createEditor(node, widget) {
       const isNewImage = state.imageKey !== state.key;
       state.imageKey = state.key;
       state.img = { w, h };
+      // Сменилась картинка — служебный виджет image должен указывать на
+      // ТЕКУЩИЙ источник, иначе штатный Mask Editor откроется со старой
+      // картинкой (там лежит результат прошлой покраски).
+      if (isNewImage) syncMaskEditorSource();
       // Восстановление воркфлоу: рамка пришла из crop_rect — её не трогаем.
       // Связи в воркфлоу восстанавливаются ПОСЛЕ onConfigure, поэтому флаг живёт
       // в состоянии, а не в аргументе загрузки.
@@ -1545,12 +1549,15 @@ function createEditor(node, widget) {
     'image',
     '',
     (value) => {
+      const text = typeof value === 'string' ? value : '';
+      // В виджет image пишет ТОЛЬКО редактор (результат покраски). Иначе это
+      // наша собственная запись текущего источника — её не считать маской.
+      if (!/clipspace-painted-masked-/i.test(text)) return;
       const target = widgetByName(node, 'mask_file');
       if (!target) return;
-      const next = typeof value === 'string' ? value : '';
-      if (target.value === next) return;
-      target.value = next;
-      target.callback?.(next, app.canvas, node);
+      if (target.value === text) return;
+      target.value = text;
+      target.callback?.(text, app.canvas, node);
       layout();
       // Редактор после сохранения подставляет ноде «выходную картинку»
       // (replaceNodeOutputImages) — под нодой появляется второе превью.
@@ -1571,7 +1578,35 @@ function createEditor(node, widget) {
       serialize: true,
       surfaces: { canvas: 'never', vueNode: 'never', panel: 'never' },
     },
+
   );
+
+  /**
+   * Текущий источник для штатного Mask Editor.
+   *
+   * Фронтенд (useMaskEditorLoader) при открытии редактора берёт картинку из
+   * виджета image — если там что-то лежит. Поэтому в виджете должен лежать
+   * ИМЕННО текущий источник:
+   *  - картинка по кабелю → пусто (тогда фронтенд берёт node.imgs, то есть
+   *    наше превью с картинкой из сокета);
+   *  - файл из input → имя файла.
+   *
+   * Иначе после покраски в виджете остаётся покрашенный файл, и следующий
+   * запуск редактора открывается со СТАРОЙ картинкой.
+   */
+  function currentSourceRef() {
+    if (upstreamNode(node)) return '';
+    const value = widgetByName(node, 'image_file')?.value;
+    return typeof value === 'string' ? value : '';
+  }
+
+  function syncMaskEditorSource() {
+    if (!maskEditorWidget) return;
+    const next = currentSourceRef();
+    if (maskEditorWidget.value === next) return;
+    // Без callback: значение ставим мы, а не редактор.
+    maskEditorWidget.value = next;
+  }
 
   const uploadButton = node.addWidget(
     'button',
@@ -1864,8 +1899,12 @@ function setupNode(node) {
     // Без этого строка сетки остаётся 'min-content' и превью не растёт
     // вместе с нодой.
     getMinHeight: () => {
+      // desiredHeight живёт внутри createEditor — берём его из публичного API
+      // редактора (node.__deggCrop выставляется в setupNode).
       const editor = node.__deggCrop;
-      const height = editor ? editor.desiredHeight() : MIN_H;
+      const height = editor && typeof editor.desiredHeight === 'function'
+        ? editor.desiredHeight()
+        : MIN_H;
       return height + WIDGET_MARGIN * 2;
     },
   });
