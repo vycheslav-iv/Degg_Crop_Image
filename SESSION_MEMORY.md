@@ -119,9 +119,14 @@
 - ✅ Маска — штатный Mask Editor на ноде (SPEC §9.4) — сделано, без своих
   кнопок (точки входа штатные).
 - `start-comfyui.bat` в `G:\ИИ web` — по аналогии с `stop-comfyui.bat`.
-- Обновить скилы под новые паттерны: `getMinHeight`/`hasLayoutSize`
-  (`comfyui-dom-widget-sizing`), `image_upload` и необязательный сокет →
-  поиск upstream по имени (`comfyui-js-extension`).
+- ✅ Скилы обновлены (2026-10-22): новый `comfyui-mask-editor` (штатный Mask
+  Editor в своей ноде + интерфейс Nodes 2.0 без своих кнопок), в
+  `comfyui-js-extension` — раздел про интерфейс 2.0 (загрузка файла =
+  комбо с `image_upload`, комбо-файл = optional, свои кнопки только legacy),
+  в `comfyui-dom-widget-sizing` — ловушка `hasLayoutSize` (размер задаётся
+  в опциях `addDOMWidget`, поздний override не учитывается), в
+  `comfyui-native-button` — `canvasOnly` прячет кнопку в 2.0. Реестр — в
+  `Custom_node_ComfyUI/AGENTS.md`.
 
 ## 6. Связанные файлы
 
