@@ -1909,8 +1909,11 @@ async def main() -> int:
                         " return { aspect: g('aspect_ratio'), mp: g('megapixels'),"
                         "  mult: g('multiplicity'), resample: g('resample'), fill: g('fill'),"
                         "  dim: g('dim_outside'), lock: g('lock_ratio'),"
-                        "  crop: g('crop_rect'), manual: g('output_size') }; })()"
+                        "  crop: g('crop_rect'), manual: g('output_size'),"
+                        "  file: g('image_file'), maskFile: g('mask_file'),"
+                        "  imageWidget: g('image') }; })()"
                     )
+                    print("  значения после восстановления:", json.dumps(got, ensure_ascii=False))
                     want = saved.get("widgets_values_named", {})
                     pairs = (
                         ("aspect", "aspect_ratio"),

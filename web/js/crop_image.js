@@ -1575,11 +1575,17 @@ function createEditor(node, widget) {
       }, 0);
     },
     {
-      serialize: true,
+      // ⛔ serialize:false ОБЯЗАТЕЛЬНО: виджеты уходят в промпт ПО ИМЕНИ
+      // (`inputs[widget.name] = value`), а у ноды есть вход `image` (IMAGE).
+      // Со значением из этого виджета во входе `image` оказывалась СТРОКА,
+      // сервер считал источник поданным и не читал файл — на выходе пустая
+      // картинка 8×8 (multiplicity). Значение маски живёт в входе mask_file.
+      serialize: false,
       surfaces: { canvas: 'never', vueNode: 'never', panel: 'never' },
     },
 
   );
+  maskEditorWidget.serialize = false;
 
   /**
    * Текущий источник для штатного Mask Editor.

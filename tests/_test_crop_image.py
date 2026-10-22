@@ -663,6 +663,39 @@ check(
     list(types["optional"]),
 )
 check("RETURN_TYPES", mod.DeggCropImage.RETURN_TYPES == ("IMAGE", "MASK", "INT", "INT"))
+
+# Пустой результат 8×8 (= multiplicity) появлялся, когда в input `image`
+# приезжала СТРОКА: фронтенд кладёт в промпт значения виджетов ПО ИМЕНИ, а
+# служебный виджет штатного Mask Editor называется `image` (имя пересекается
+# с сокетом IMAGE). Строка — не картинка: источник не подан, нода обязана
+# прочитать файл image_file, а не отдавать пустую картинку.
+_orig_loader = mod.load_source_file
+mod.load_source_file = lambda name: (
+    (make_image(1, 20, 20), None) if str(name) == "photo.png" else (None, None)
+)
+try:
+    _crop = mod.DeggCropImage()
+    out, mask, w, h = _crop.crop(
+        image="photo.png",
+        image_file="photo.png",
+        megapixels=0.0004,
+        multiplicity=8,
+        crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+    )
+finally:
+    mod.load_source_file = _orig_loader
+
+_exp_w, _exp_h = mod.output_size(20, 20, 0.0004, 8)
+check(
+    "строка во входе image не считается источником: читается файл",
+    (w, h) == (_exp_w, _exp_h),
+    {"got": (w, h), "expected": (_exp_w, _exp_h), "empty_fallback": (8, 8)},
+)
+check(
+    "строка во входе image: размер результата не равен пустой заглушке 8×8",
+    not (w == 8 and h == 8),
+    (w, h),
+)
 check("mapping registered", mod.NODE_CLASS_MAPPINGS.get("DeggCropImage") is mod.DeggCropImage)
 
 # ─────────────────────────────── summary ───────────────────────────────────

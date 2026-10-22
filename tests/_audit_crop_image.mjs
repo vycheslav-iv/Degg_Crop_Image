@@ -150,7 +150,25 @@ check(
   !/vueNode:\s*'never'/.test(domWidgetOptions) && !/canvasOnly:\s*true/.test(domWidgetOptions),
 );
 check("JS: hideOnZoom: false", /hideOnZoom:\s*false/.test(JS));
-check("JS: serialize: false", /serialize:\s*false/.test(JS));
+// ⛔ Служебный виджет `image` — канал штатного Mask Editor. Он НЕ должен
+// сериализоваться: виджеты уходят в промпт по имени, а вход `image` — это
+// сокет IMAGE. Со строкой в нём сервер считал источник поданным и отдавал
+// пустую картинку 8×8 (multiplicity). Проверяем оба канала, которыми
+// фронтенд читает флаг: опцию addWidget И свойство виджета.
+const maskWidgetSrc = JS.slice(
+  JS.indexOf("const maskEditorWidget = node.addWidget("),
+  JS.indexOf("function currentSourceRef()"),
+);
+check(
+  "JS: служебный виджет image не сериализуется (опция addWidget)",
+  // Только строка опции целиком (комментарий `// serialize:false ...` не
+  // считается: детектор не должен зеленеть от собственного пояснения).
+  maskWidgetSrc.length > 0 && /^\s*serialize:\s*false,/m.test(maskWidgetSrc),
+);
+check(
+  "JS: служебный виджет image не сериализуется (свойство виджета)",
+  /maskEditorWidget\.serialize\s*=\s*false/.test(maskWidgetSrc),
+);
 check("JS: нет перезаписи this.computeSize", !/this\.computeSize\s*=/.test(JS));
 check("JS: нет setInterval/setTimeout-поллинга", !/setInterval\s*\(/.test(JS));
 check("JS: нет window.addEventListener", !/window\.addEventListener/.test(JS));
