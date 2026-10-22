@@ -385,6 +385,19 @@ async def main() -> int:
             after = await cdp.eval(STATE_JS)
             check("превью появилось после connect", "example.png" in after.get("src", ""), after.get("src"))
             check("размер источника прочитан", after.get("natural") == [768, 768], after.get("natural"))
+            # Источник для Mask Editor — то, что сейчас в превью. При подключённом
+            # сокете это картинка ИЗ КАБЕЛЯ: значит редактор рисует по ней.
+            editor_source = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const img = (n.imgs || [])[0];"
+                " return { count: (n.imgs || []).length, src: img ? (img.src || '') : '' }; })()"
+            )
+            check(
+                "Mask Editor: при подключённом сокете рисуем по картинке из кабеля",
+                int((editor_source or {}).get("count") or 0) >= 1
+                and "example.png" in (editor_source or {}).get("src", ""),
+                editor_source,
+            )
             check("подсказка скрыта", not after.get("emptyVisible"))
             # ── Режим «файл из input» без подключённого сокета ──────────────
             # 1) отключаем сокет image, 2) выбираем файл, 3) ждём превью.
