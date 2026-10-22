@@ -476,6 +476,21 @@ class DeggCropImage:
                         "image socket is not connected.",
                     },
                 ),
+                # Файл с маской, нарисованной в штатном Mask Editor ComfyUI.
+                # Фронтенд сохраняет результат рисования в папку input и
+                # кладёт ссылку в служебный виджет; интерфейс переносит её
+                # сюда. Альфа файла = инвертированная маска (конвенция
+                # ComfyUI: 1 = убрать), поэтому маска = 1 - альфа.
+                "mask_file": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "hidden": True,
+                        "advanced": True,
+                        "tooltip": "Internal: image file with the mask painted in "
+                        "the standard Mask Editor. Written by the node UI.",
+                    },
+                ),
                 # Скрытые служебные значения (состояние кадра и ручной размер
                 # результата) и элементы управления редактором. Сервер читает
                 # только crop_rect/output_size/megapixels/multiplicity —
@@ -589,6 +604,7 @@ class DeggCropImage:
         self,
         image=None,
         image_file="",
+        mask_file="",
         aspect_ratio="free",
         lock_ratio=True,
         center_x=0,
@@ -610,6 +626,11 @@ class DeggCropImage:
         file_mask = None
         if image is None:
             image, file_mask = load_source_file(image_file)
+        # Маска: явный вход важнее файла с нарисованной маской, тот важнее
+        # альфы исходного файла.
+        if mask is None and mask_file:
+            _, painted_mask = load_source_file(mask_file)
+            mask = painted_mask
         if mask is None and file_mask is not None:
             mask = file_mask
 

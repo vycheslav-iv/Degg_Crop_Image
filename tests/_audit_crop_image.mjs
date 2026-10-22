@@ -56,6 +56,7 @@ const EXPECTED_REQUIRED = [
 const EXPECTED_OPTIONAL = [
   "image",
   "image_file",
+  "mask_file",
   "crop_rect",
   "output_size",
   "lock_ratio",
@@ -141,9 +142,12 @@ check("JS: имя класса совпадает с Python", new RegExp(`NODE_C
 check("JS: имя виджета crop_rect совпадает", /widgetByName\(node,\s*'crop_rect'\)/.test(JS));
 check("JS: превью через addDOMWidget", /addDOMWidget\(/.test(JS));
 check("JS: панель свойств скрыта (hideInPanel)", /hideInPanel:\s*true/.test(JS));
+// Превью (addDOMWidget) должно быть видно и в Vue-нодах. Служебные виджеты
+// (канал для Mask Editor) скрыты — это проверяется отдельно.
+const domWidgetOptions = (JS.slice(JS.indexOf("node.addDOMWidget(")).split("})")[0] || "");
 check(
-  "JS: DOM-виджет не спрятан из Vue-нод (surfaces.vueNode != never)",
-  !/surfaces:\s*\{[^}]*vueNode:\s*'never'/.test(JS) && !/canvasOnly:\s*true/.test(JS),
+  "JS: DOM-виджет (превью) не спрятан из Vue-нод (surfaces.vueNode != never)",
+  !/vueNode:\s*'never'/.test(domWidgetOptions) && !/canvasOnly:\s*true/.test(domWidgetOptions),
 );
 check("JS: hideOnZoom: false", /hideOnZoom:\s*false/.test(JS));
 check("JS: serialize: false", /serialize:\s*false/.test(JS));
@@ -444,10 +448,10 @@ check(
 // ComfyUI рисует обязательные входы первыми, а «интерфейсные» (необязательные)
 // — после, поэтому порядок на теле ноды задаёт редактор.
 const WIDGET_ORDER_EXPECTED = [
-  "image_file", "upload_file", "preview",
+  "image_file", "upload_file", "mask_editor", "preview",
   "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
   "megapixels", "multiplicity", "resample", "fill", "dim_outside", "golden_ratio",
-  "crop_rect", "output_size",
+  "crop_rect", "output_size", "mask_file", "image",
 ];
 const orderBlock = (JS.slice(JS.indexOf("const WIDGET_ORDER = [")).split("];")[0] || "");
 const orderFound = [...orderBlock.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
@@ -464,7 +468,24 @@ check(
     // превью — следом (в нём лежат кнопки «Вписать / По центру / Сбросить»)
     WIDGET_ORDER_EXPECTED.indexOf("image_file") === 0 &&
     WIDGET_ORDER_EXPECTED.indexOf("upload_file") === 1 &&
-    WIDGET_ORDER_EXPECTED.indexOf("preview") === 2,
+    WIDGET_ORDER_EXPECTED.indexOf("mask_editor") === 2 &&
+    WIDGET_ORDER_EXPECTED.indexOf("preview") === 3,
+);
+check(
+  "JS: штатный Mask Editor: служебный виджет image + кнопка + node.imgs",
+  // Фронтенд пишет результат рисования в виджет с именем 'image'
+  /addWidget\(\s*'string',\s*'image'/.test(JS) &&
+    /open_maskeditor/.test(JS) &&
+    /node\.imgs = \[image\]/.test(JS) &&
+    /widgetByName\(node, 'mask_file'\)/.test(JS) &&
+    // маска из файла показывается в превью отдельным слоем
+    /paintedMaskUrl/.test(JS) && /degg-crop__masklayer/.test(JS),
+);
+check(
+  "Python: маска из файла Mask Editor (mask_file) — необязательный вход",
+  /"mask_file":\s*\(\s*"STRING"/.test(PY) &&
+    /"hidden": True/.test(PY) &&
+    /mask = painted_mask/.test(PY),
 );
 check(
   "JS: кнопка загрузки файла — нативный виджет с загрузкой на сервер",

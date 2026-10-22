@@ -585,6 +585,7 @@ check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom
 # редактор (WIDGET_ORDER в web/js/crop_image.js) — он проверяется аудитом и
 # живой DOM-пробой.
 INTERFACE_INPUTS = [
+    "mask_file",
     "lock_ratio",
     "center_x",
     "center_y",
@@ -640,6 +641,13 @@ check(
         "optional": list(types["optional"]),
         "image_file_options": types["optional"]["image_file"][1],
     },
+)
+check(
+    "вход mask_file (маска из штатного Mask Editor) — необязательный и скрытый",
+    "mask_file" in types["optional"]
+    and types["optional"]["mask_file"][0] == "STRING"
+    and types["optional"]["mask_file"][1].get("hidden") is True,
+    types["optional"].get("mask_file"),
 )
 check(
     "мегапиксели и прочее остались обязательными",

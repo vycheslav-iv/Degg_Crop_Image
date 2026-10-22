@@ -17,7 +17,9 @@
    размер DOM-виджета задавался поздним override `computeLayoutSize` (фронтенд
    считает `hasLayoutSize` при первом рендере); новый виджет сдвигал
    позиционное восстановление значений в старых воркфлоу.
-4. Открытый вопрос (не решён): маска «стандартная, как везде у стандартных нод».
+4. **Штатный Mask Editor на ноде** (решение открытого вопроса): кнопка «Маска»
+   открывает редактор ComfyUI прямо на нашей ноде; результат рисования
+   сохраняется на сервер, применяется к результату и виден в превью.
 
 ## 2. Итоговое состояние кода
 
@@ -32,10 +34,20 @@
 - `crop_image.py:130` `output_size()` — размер результата по мегапикселям и
   кратности (1 МП = 1024²).
 - `web/js/crop_image.js:21` `WIDGET_ORDER` — порядок виджетов: `image_file`,
-  `upload_file`, `preview`, `lock_ratio`, …, `crop_rect`, `output_size`.
+  `upload_file`, `mask_editor`, `preview`, `lock_ratio`, …, `crop_rect`,
+  `output_size`, `mask_file`, `image` (служебный).
 - `web/js/crop_image.js:521` `imageSlotIndex()` — поиск сокета `image` ПО ИМЕНИ
   (сокет необязательный ⇒ не первый).
 - `web/js/crop_image.js:591` `previewFor()` — превью: сокет → файл из `input`.
+- `web/js/crop_image.js:605` `paintedMaskUrl()` — ссылка на файл с нарисованной
+  маской; `crop_image.js:656` слой `.degg-crop__masklayer` показывает её поверх
+  картинки.
+- `web/js/crop_image.js:1535-1580` — кнопка «Маска» (`open_maskeditor()` через
+  `ComfyApp.clipspace_return_node`), служебный скрытый виджет `image` (цель
+  Mask Editor: фронтенд пишет результат рисования именно в виджет с таким
+  именем) и перенос значения в вход `mask_file`.
+- `crop_image.py:484` вход `mask_file` (скрытый) — файл с маской из Mask Editor;
+  `crop_image.py:629` приоритет маски: вход `mask` → `mask_file` → альфа файла.
 - `web/js/crop_image.js:1458/1467` `setFileValue()` / `uploadFile()` — загрузка
   файла в `input` и подстановка имени в комбо.
 - `web/js/crop_image.js:1659/1675` `restoreWidgetValuesByName()` /
@@ -79,8 +91,12 @@
 - ⛔ **Батч: размер результата считается от первого кадра** (SPEC §8.3).
 - ⛔ **Размер результата в UI и в API считается по-разному** (SPEC §8.5) —
   решение пользователя «оставить как есть».
-- ⛔ **Маска** — семантику не менять, пока пользователь не выбрал вариант
-  (SPEC §8.4): сейчас работает вход `mask` + маска из альфы файла.
+- ⛔ **Маска** — конвенция ComfyUI (1 = убрать, видимая альфа = 1 − маска)
+  НЕ МЕНЯТЬ. У файла, сохранённого Mask Editor, альфа = инвертированная маска
+  (`applyMaskAsAlpha`: 255 − маска) ⇒ маска = 1 − альфа (SPEC §9.4).
+- ⚠️ `ComfyApp.open_maskeditor` во фронтенде помечен deprecated — кнопка «Маска»
+  использует его; запасной путь — палитра команд «Open Mask Editor for
+  Selected Node».
 - Правила фронтенда Nodes 2.0: `getMinHeight` вместо позднего override
   `computeLayoutSize`; upstream — по имени сокета; `hideInPanel` для
   DOM-виджетов, скрытых в панели; никаких `setInterval`/`MutationObserver` для
@@ -92,9 +108,9 @@
 
 ## 5. Следующие шаги (идеи, не сделано)
 
-- ⏳ **Маска** — выбрать вариант (SPEC §8.4): 1) оставить как есть; 2) своя
-  кисть в превью; 3) открывать нашу ноду в штатном Mask Editor (нужен скрытый
-  виджет с именем `image`).
+- ✅ Маска — штатный Mask Editor на ноде (SPEC §9.4) — сделано.
+- ⏳ Если фронтенд уберёт `ComfyApp.open_maskeditor` — перевести кнопку на
+  палитру команд или на `commandStore.execute('Comfy.MaskEditor.OpenMaskEditor')`.
 - `start-comfyui.bat` в `G:\ИИ web` — по аналогии с `stop-comfyui.bat`.
 - Обновить скилы под новые паттерны: `getMinHeight`/`hasLayoutSize`
   (`comfyui-dom-widget-sizing`), `image_upload` и необязательный сокет →
@@ -104,11 +120,13 @@
 
 - Код: `crop_image.py`, `web/js/crop_image.js`, `__init__.py`, `locales/{ru,en}/nodeDefs.json`.
 - Документация: `SPECIFICATION.md` (§2 контракт, §5 редактор, §7 проверки,
-  §8 решения пользователя, §9 режим файла), `README.md`, `SESSION_MEMORY.md`.
-- Проверки: `tests/_test_crop_image.py` (107), `tests/_smoke_crop_image.mjs` (82),
-  `tests/_audit_crop_image.mjs` (174), `tests/_probe_live_dom_crop_image.py` (115,
-  живая), `tests/_check_file_mode.py`, `tests/_check_real_mask.py`,
-  `tests/_check_image_size.py` (серверные), `tests/_diag_layout_crop_image.py`
-  (диагностика раскладки), `tests/_shot_live_node.py` (снимок ноды).
+  §8 решения пользователя, §9 режим файла и §9.4 Mask Editor), `README.md`,
+  `SESSION_MEMORY.md`.
+- Проверки: `tests/_test_crop_image.py` (108), `tests/_smoke_crop_image.mjs` (82),
+  `tests/_audit_crop_image.mjs` (176), `tests/_probe_live_dom_crop_image.py` (121,
+  живая), `tests/_check_file_mode.py`, `tests/_check_mask_file.py`,
+  `tests/_check_real_mask.py`, `tests/_check_image_size.py` (серверные),
+  `tests/_diag_layout_crop_image.py` (диагностика раскладки),
+  `tests/_shot_live_node.py` (снимок ноды).
 - Репро-воркфлоу: `D:\ComfyUI_windows_portable\ComfyUI\user\default\workflows\Test Crop.json`
   (картинка `image_flux3_klein_distilled_t2i_00023_.png` 2720×1536).

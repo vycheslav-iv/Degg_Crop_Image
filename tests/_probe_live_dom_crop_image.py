@@ -328,6 +328,7 @@ async def main() -> int:
             expected_order = [
                 "image_file",
                 "upload_file",
+                "mask_editor",
                 "preview",
                 "lock_ratio",
                 "center_x",
@@ -341,6 +342,8 @@ async def main() -> int:
                 "fill",
                 "dim_outside",
                 "golden_ratio",
+                "mask_file",
+                "image",
             ]
             check("порядок виджетов как в задании", order == expected_order, order)
 
@@ -490,6 +493,82 @@ async def main() -> int:
             )
             await asyncio.sleep(1.0)
             back = await cdp.eval(STATE_JS)
+            # ── Штатный Mask Editor ──────────────────────────────────────────
+            mask_state = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const imgs = n.imgs || [];"
+                " const editor = (n.widgets || []).find((x) => x.name === 'image');"
+                " const file = (n.widgets || []).find((x) => x.name === 'mask_file');"
+                " const btn = (n.widgets || []).find((x) => x.name === 'mask_editor');"
+                " return { imgs: imgs.length, hasImg: !!(imgs[0] && imgs[0].src),"
+                "   editorFound: !!editor, editorType: editor ? editor.type : null,"
+                "   editorHidden: editor ? !!editor.options?.surfaces : null,"
+                "   fileFound: !!file, btnFound: !!btn, btnType: btn ? btn.type : null,"
+                "   btnLabel: btn ? (btn.label || '') : '' }; })()"
+            )
+            check(
+                "Mask Editor: у ноды есть картинка для редактора (node.imgs)",
+                (mask_state or {}).get("imgs", 0) >= 1 and (mask_state or {}).get("hasImg") is True,
+                mask_state,
+            )
+            check(
+                "Mask Editor: служебный виджет image есть и скрыт",
+                (mask_state or {}).get("editorFound") is True
+                and (mask_state or {}).get("editorType") == "string"
+                and (mask_state or {}).get("editorHidden") is True,
+                mask_state,
+            )
+            check(
+                "Mask Editor: кнопка «Маска» есть на ноде и подписана",
+                (mask_state or {}).get("btnFound") is True
+                and (mask_state or {}).get("btnType") == "button"
+                and bool((mask_state or {}).get("btnLabel")),
+                mask_state,
+            )
+            # Значение, которое записал бы Mask Editor, должно доехать до входа
+            # mask_file (по нему сервер возьмёт маску из альфы файла).
+            mask_flow = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const editor = (n.widgets || []).find((x) => x.name === 'image');"
+                " const file = (n.widgets || []).find((x) => x.name === 'mask_file');"
+                " if (!editor || !file) return { ok: false };"
+                " editor.value = 'clipspace-painted-masked-1.png [input]';"
+                " editor.callback && editor.callback(editor.value, app.canvas, n);"
+                " return { ok: true, file: file.value,"
+                "   layer: (n.__deggCrop.widget.querySelector('.degg-crop__masklayer') || {}).src || '' }; })()"
+            )
+            check(
+                "Mask Editor: результат рисования попадает во вход mask_file",
+                (mask_flow or {}).get("ok") is True
+                and (mask_flow or {}).get("file") == "clipspace-painted-masked-1.png [input]",
+                mask_flow,
+            )
+            await asyncio.sleep(0.8)
+            mask_layer = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const el = n.__deggCrop.widget.querySelector('.degg-crop__masklayer');"
+                " if (!el) return null;"
+                " const r = el.getBoundingClientRect();"
+                " return { src: el.getAttribute('src') || '', display: el.style.display,"
+                "   w: Math.round(r.width), h: Math.round(r.height) }; })()"
+            )
+            check(
+                "Mask Editor: слой маски показан в превью",
+                bool((mask_layer or {}).get("src"))
+                and "clipspace-painted-masked-1.png" in (mask_layer or {}).get("src", "")
+                and (mask_layer or {}).get("display") != "none",
+                mask_layer,
+            )
+            # Убираем маску, чтобы дальнейшие сценарии шли как раньше.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const editor = (n.widgets || []).find((x) => x.name === 'image');"
+                " const file = (n.widgets || []).find((x) => x.name === 'mask_file');"
+                " if (editor) { editor.value = ''; editor.callback && editor.callback('', app.canvas, n); }"
+                " if (file) { file.value = ''; }"
+                " return 1; })()"
+            )
+            await asyncio.sleep(0.3)
             check(
                 "после загрузки превью показывает загруженный файл",
                 bool((uploaded or {}).get("value"))
@@ -1849,6 +1928,27 @@ async def main() -> int:
                 " return { visible: getComputedStyle(g).display !== 'none' }; })()"
             )
             check("сетка: выключается флажком", (golden_off or {}).get("visible") is False, golden_off)
+
+            # Кнопка «Маска» открывает штатный Mask Editor на нашей ноде.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const b = (n.widgets || []).find((x) => x.name === 'mask_editor');"
+                " if (b && b.callback) b.callback('mask', app.canvas, n);"
+                " return 1; })()"
+            )
+            await asyncio.sleep(2.0)
+            editor_state = await cdp.eval(
+                "(() => { const d = document.querySelector('.mask-editor-dialog');"
+                " if (!d) return { opened: false };"
+                " return { opened: true, canvases: d.querySelectorAll('canvas').length,"
+                "   width: Math.round(d.getBoundingClientRect().width) }; })()"
+            )
+            check(
+                "Mask Editor: кнопка «Маска» открывает штатный редактор",
+                (editor_state or {}).get("opened") is True
+                and (editor_state or {}).get("canvases", 0) >= 1,
+                editor_state,
+            )
 
             errors = await cdp.eval("window.__probeErrors")
             real = [e for e in (errors or []) if "example.png" not in e and "favicon" not in e]

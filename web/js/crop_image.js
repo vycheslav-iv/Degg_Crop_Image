@@ -23,6 +23,7 @@ const WIDGET_ORDER = [
   // «Вписать / По центру / Сбросить» (они лежат внутри превью).
   'image_file',
   'upload_file',
+  'mask_editor',
   'preview',
   'lock_ratio',
   'center_x',
@@ -41,6 +42,12 @@ const WIDGET_ORDER = [
   // и новый виджет в начале списка сдвинул бы все значения на шаг.
   'crop_rect',
   'output_size',
+  'mask_file',
+  // Служебный виджет image — цель штатного Mask Editor (фронтенд пишет
+  // результат рисования именно в виджет с таким именем). Он скрыт, но
+  // стоит рядом со скрытыми: новый виджет в начале списка сдвинул бы
+  // позиционное восстановление значений в старых воркфлоу.
+  'image',
 ];
 const CSS_ID = 'degg-crop-image-css';
 const MIN_H = 180;
@@ -100,6 +107,7 @@ const LABELS = {
     center: 'По центру',
     reset: 'Сбросить',
     upload: 'Загрузить файл',
+    mask: 'Маска',
     empty: 'Подключите изображение',
     fitTip: 'Вписать рамку в границы изображения, сохранив пропорции, и поставить по центру',
     centerTip: 'Поставить рамку по центру изображения, не меняя размер',
@@ -132,6 +140,7 @@ const LABELS = {
     center: 'Center',
     reset: 'Reset',
     upload: 'Upload file',
+    mask: 'Mask',
     empty: 'Connect an image',
     fitTip: 'Fit the frame to the image bounds, keep proportions, then center',
     centerTip: 'Center the frame on the image without changing its size',
@@ -446,6 +455,7 @@ function css() {
 .degg-crop__stage{position:relative;flex:1 1 auto;min-height:80px;overflow:hidden;
   border-radius:6px;background:#141414;touch-action:none;user-select:none;cursor:default}
 .degg-crop__img{position:absolute;pointer-events:none;image-rendering:auto}
+.degg-crop__masklayer{position:absolute;pointer-events:none;image-rendering:auto;display:none}
 .degg-crop__fill{position:absolute;pointer-events:none;border-radius:1px}
 .degg-crop__fill--checker{background-color:#bbb;background-image:
   linear-gradient(45deg,#888 25%,transparent 25%,transparent 75%,#888 75%),
@@ -588,6 +598,22 @@ function filePreviewUrl(node) {
   return viewUrl({ filename: clean, subfolder: '', type: 'input' });
 }
 
+/**
+ * Ссылка на файл с нарисованной маской (штатный Mask Editor ComfyUI).
+ *
+ * Фронтенд сохраняет результат рисования в папку input: альфа файла =
+ * инвертированная маска, RGB = покрашенная картинка. Значение приходит
+ * аннотированным путём («имя.png [input]»).
+ */
+function paintedMaskUrl(node) {
+  const widget = widgetByName(node, 'mask_file');
+  const raw = widget?.value;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const name = raw.trim().replace(/\s*\[(input|output|temp)\]\s*$/i, '');
+  if (!name) return null;
+  return viewUrl({ filename: name, subfolder: '', type: 'input' });
+}
+
 function previewFor(node) {
   const source = upstreamNode(node);
   if (!source) {
@@ -627,6 +653,9 @@ function createEditor(node, widget) {
   // наружу (аутпейнт) она и есть фон результата.
   const fillEl = make('div', 'degg-crop__fill', stage);
   const image = make('img', 'degg-crop__img', stage);
+  // Слой с маской, нарисованной в штатном Mask Editor: прозрачность файла =
+  // инвертированная маска, поэтому выбитые маской места видны как «дырки».
+  const maskLayer = make('img', 'degg-crop__masklayer', stage);
   image.draggable = false;
   image.alt = '';
   const dimEl = make('div', 'degg-crop__dim', stage);
@@ -1001,7 +1030,7 @@ function createEditor(node, widget) {
     if (!width || !height) return;
 
     if (!state.img) {
-      for (const el of [image, fillEl, dimEl, frameEl, badge, ...Object.values(handles)]) {
+      for (const el of [image, maskLayer, fillEl, dimEl, frameEl, badge, ...Object.values(handles)]) {
         el.style.display = 'none';
       }
       empty.style.display = '';
@@ -1025,6 +1054,21 @@ function createEditor(node, widget) {
     state.offY = PAD + (usableH - u.h * scale) / 2 - Math.min(0, r.y) * scale;
 
     setRect(image, state.offX, state.offY, state.img.w * scale, state.img.h * scale);
+
+    // Нарисованная маска (штатный Mask Editor) показывается поверх картинки:
+    // файл имеет ту же геометрию, его альфа = инвертированная маска.
+    const maskUrl = paintedMaskUrl(node);
+    if (maskUrl) {
+      if (maskLayer.dataset.src !== maskUrl) {
+        maskLayer.dataset.src = maskUrl;
+        maskLayer.src = maskUrl;
+      }
+      setRect(maskLayer, state.offX, state.offY, state.img.w * scale, state.img.h * scale);
+      maskLayer.style.display = '';
+    } else {
+      maskLayer.style.display = 'none';
+      maskLayer.dataset.src = '';
+    }
 
     const fx = state.offX + r.x * scale;
     const fy = state.offY + r.y * scale;
@@ -1199,6 +1243,8 @@ function createEditor(node, widget) {
       const w = image.naturalWidth || 0;
       const h = image.naturalHeight || 0;
       if (!w || !h) return;
+      // Штатный Mask Editor берёт картинку из node.imgs (как у LoadImage).
+      node.imgs = [image];
       const changed = !state.img || state.img.w !== w || state.img.h !== h;
       // Новая картинка (другой файл) — тот же сброс, что и у кнопки «Сбросить».
       // При восстановлении воркфлоу (restore) рамку трогать нельзя: она пришла
@@ -1481,6 +1527,55 @@ function createEditor(node, widget) {
     }
   }
 
+  // ── ШТАТНЫЙ MASK EDITOR COMFYUI ─────────────────────────────────────────
+  // Фронтенд сохраняет результат рисования в виджет с именем 'image'
+  // (writeImageWidgetValue → setNodeWidgetValue(node, 'image', …)), поэтому у
+  // ноды должен быть такой виджет. Он скрыт: это служебный канал, а не
+  // элемент управления.
+  //
+  // Чтобы редактор открылся, ноде нужна картинка: фронтенд требует
+  // node.imgs (как у LoadImage) — выдаём ему наш <img> из превью.
+  function openMaskEditor() {
+    const appClass = app?.constructor;
+    if (!appClass) return;
+    appClass.clipspace_return_node = node;
+    if (typeof appClass.open_maskeditor === 'function') {
+      appClass.open_maskeditor();
+    }
+  }
+
+  const maskButton = node.addWidget(
+    'button',
+    'mask_editor',
+    null,
+    () => openMaskEditor(),
+    {
+      serialize: false,
+      surfaces: { canvas: 'shown', vueNode: 'shown', panel: 'never' },
+    },
+  );
+
+  // Значение, которое записал Mask Editor: «имя.png [input]». Переносим его в
+  // вход mask_file — по нему сервер прочитает файл и возьмёт маску из альфы.
+  const maskEditorWidget = node.addWidget(
+    'string',
+    'image',
+    '',
+    (value) => {
+      const target = widgetByName(node, 'mask_file');
+      if (!target) return;
+      const next = typeof value === 'string' ? value : '';
+      if (target.value === next) return;
+      target.value = next;
+      target.callback?.(next, app.canvas, node);
+      layout();
+    },
+    {
+      serialize: true,
+      surfaces: { canvas: 'never', vueNode: 'never', panel: 'never' },
+    },
+  );
+
   const uploadButton = node.addWidget(
     'button',
     'upload_file',
@@ -1515,6 +1610,7 @@ function createEditor(node, widget) {
     }
     empty.textContent = t.empty;
     if (uploadButton) uploadButton.label = t.upload;
+    if (maskButton) maskButton.label = t.mask;
     renderHelp();
     setOptionLabels(aspectWidget, t.aspect);
     setOptionLabels(fillWidget, t.fill);
