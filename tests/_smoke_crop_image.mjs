@@ -6,6 +6,8 @@
 //     входах (иначе превью показывает не тот размер, что реально получится);
 //   • parseRectFrac/clampFrac не пропускают мусор и держат рамку в границах;
 //   • resizeFrame сохраняет пропорцию и неподвижный якорь;
+//   • магнит: края рамки прилипают к границам изображения (перенос, resize,
+//     фиксированная пропорция, допуск 0 = выключен);
 //   • RATIO_VALUES совпадает с Python-словарём;
 //   • расширение регистрируется и не трогает чужие ноды.
 //
@@ -165,6 +167,86 @@ check(
 
 const beyond = resizeFrame({ x: 0.9, y: 0.9, w: 0.2, h: 0.2 }, 500, 500, "se", 0, 100, 100);
 check("result stays normalized", beyond.w >= 1e-4 && beyond.x <= 100, JSON.stringify(beyond));
+
+// ── 4b. Магнит: края рамки прилипают к границам изображения ────────────────
+const snapMove = ctx.snapMoveFrame ?? (() => null);
+const snapEdges = ctx.snappedEdges ?? (() => ({}));
+
+const nearLeft = snapMove({ x: 5, y: 300, w: 200, h: 200 }, 12, 1000, 1000);
+check("магнит: левый край в допуске прилипает к 0", nearLeft && nearLeft.x === 0, JSON.stringify(nearLeft));
+check(
+  "магнит: перенос не меняет размер рамки",
+  nearLeft && nearLeft.w === 200 && nearLeft.h === 200,
+  JSON.stringify(nearLeft),
+);
+check("магнит: чужая ось не трогается", nearLeft && nearLeft.y === 300, JSON.stringify(nearLeft));
+
+const nearRight = snapMove({ x: 795, y: 300, w: 200, h: 200 }, 12, 1000, 1000);
+check(
+  "магнит: правый край прилипает к ширине изображения",
+  nearRight && nearRight.x + nearRight.w === 1000,
+  JSON.stringify(nearRight),
+);
+
+const nearBottom = snapMove({ x: 300, y: 795, w: 200, h: 200 }, 12, 1000, 1000);
+check(
+  "магнит: нижний край прилипает к высоте изображения",
+  nearBottom && nearBottom.y + nearBottom.h === 1000,
+  JSON.stringify(nearBottom),
+);
+
+const far = snapMove({ x: 100, y: 100, w: 200, h: 200 }, 12, 1000, 1000);
+check("магнит: вдали от краёв рамка не двигается", far && far.x === 100 && far.y === 100, JSON.stringify(far));
+
+const nearest = snapMove({ x: 6, y: 300, w: 994, h: 200 }, 12, 1000, 1000);
+check(
+  "магнит: из двух близких краёв выбирается ближайший",
+  nearest && nearest.x === 6 && nearest.x + nearest.w === 1000,
+  JSON.stringify(nearest),
+);
+
+const noTol = snapMove({ x: 5, y: 300, w: 200, h: 200 }, 0, 1000, 1000);
+check("магнит: допуск 0 — привязки нет", noTol && noTol.x === 5, JSON.stringify(noTol));
+
+const edgesLeft = snapEdges({ x: 0, y: 120, w: 500, h: 300 }, 1000, 1000);
+check(
+  "магнит: подсветка знает, какой край прилип",
+  edgesLeft.left === true && edgesLeft.top === false && edgesLeft.right === false && edgesLeft.bottom === false,
+  JSON.stringify(edgesLeft),
+);
+const edgesNone = snapEdges({ x: 10, y: 120, w: 500, h: 300 }, 1000, 1000);
+check(
+  "магнит: без прилипания подсветки нет",
+  !edgesNone.left && !edgesNone.right && !edgesNone.top && !edgesNone.bottom,
+  JSON.stringify(edgesNone),
+);
+
+const snapEast = resizeFrame({ x: 100, y: 100, w: 400, h: 200 }, 490, 0, "e", 0, 1000, 1000, 16, 20);
+check(
+  "магнит resize: правый край встаёт ровно на границу",
+  Math.abs(snapEast.x + snapEast.w - 1) < 1e-9,
+  JSON.stringify(snapEast),
+);
+const snapWest = resizeFrame({ x: 10, y: 100, w: 400, h: 200 }, 4, 0, "w", 0, 1000, 1000, 16, 20);
+check(
+  "магнит resize: левый край встаёт ровно на границу",
+  Math.abs(snapWest.x) < 1e-9,
+  JSON.stringify(snapWest),
+);
+const snapNoTol = resizeFrame({ x: 100, y: 100, w: 400, h: 200 }, 490, 0, "e", 0, 1000, 1000, 16, 0);
+check(
+  "магнит resize: допуск 0 — поведение прежнее",
+  Math.abs(snapNoTol.w - 0.89) < 1e-9,
+  JSON.stringify(snapNoTol),
+);
+const snapLockedCorner = resizeFrame({ x: 100, y: 100, w: 200, h: 200 }, 690, 500, "se", 2, 1000, 1000, 16, 20);
+check(
+  "магнит resize: зафиксированная пропорция не отменяет прилипание",
+  snapLockedCorner &&
+    Math.abs(snapLockedCorner.x + snapLockedCorner.w - 1) < 1e-9 &&
+    Math.abs((snapLockedCorner.w * 1000) / (snapLockedCorner.h * 1000) - 2) < 1e-9,
+  JSON.stringify(snapLockedCorner),
+);
 
 // ── 5. RATIO_VALUES ↔ Python ───────────────────────────────────────────────
 const py = fs.readFileSync(PY, "utf8");

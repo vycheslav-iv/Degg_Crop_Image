@@ -54,6 +54,17 @@ const MAX_H = 560;
 const PAD = 10;
 const HANDLE = 10;
 const EDGE_HIT = 12;
+// «Магнит» краёв рамки: попадание в границы изображения с точностью до стольких
+// ЭКРАННЫХ пикселей считается прилипанием. Допуск задан в экранных, а не в
+// пикселях источника: иначе при отдалении привязку не почувствовать, а при
+// приближении она тянула бы на десятки экранных пикселей.
+// 7 px было почти неощутимо (нужно было целиться в край), 12 и 16 — всё ещё
+// просили усилить; 20 — потолок: ловит край уверенно, но на полпути не хватает
+// (замер живой пробой: в 18 экранных px от границы край прилипает, в 26 —
+// остаётся на месте; сверху значение ограничивает аудит: 10..20).
+const SNAP_PX = 20;
+// Цвет рамки, пока край прилип к границе изображения (обратная связь магнита).
+const SNAP_COLOR = '#ffcf5c';
 // Предел доли кадра: уходить за кадром дальше бессмысленно.
 const MAX_FRAC = 100;
 // Допуск, в котором пропорции кадра и результата считаются совпадающими.
@@ -117,6 +128,7 @@ const LABELS = {
     help: [
       'Перетаскивание внутри рамки — перемещение.',
       'Shift + перетаскивание внутри — строго по горизонтали или вертикали.',
+      'Края рамки примагничиваются к границам изображения; Alt + перетаскивание — без примагничивания.',
       'Углы и стороны рамки — изменение размера.',
       'Shift + угол/сторона при «Свободно» — масштаб с сохранением текущих пропорций.',
       '«Зафиксировано» фиксирует пропорции, которые есть у рамки сейчас.',
@@ -150,6 +162,7 @@ const LABELS = {
     help: [
       'Drag inside the frame to move it.',
       'Shift + drag inside — strictly horizontal or vertical movement.',
+      'Frame edges snap to the image bounds; Alt + drag disables snapping.',
       'Frame corners and edges resize it.',
       'Shift + corner/edge while Free — scale keeping the current proportions.',
       'Locked freezes the proportions the frame has right now.',
@@ -364,6 +377,56 @@ export function axisDelta(dx, dy) {
 }
 
 /**
+ * Магнит при ПЕРЕНОСЕ рамки: жёстко сдвинуть её так, чтобы ближайший край лёг на
+ * границу изображения. Размер не меняется — рамка не деформируется, а едет.
+ *
+ * Сдвиг считается по каждой оси независимо: кандидаты — левый/верхний край к 0
+ * и правый/нижний к размеру изображения. Если в допуск попали оба края (рамка
+ * почти во всё изображение), побеждает ближайший, иначе рамка дёрнулась бы на
+ * величину, которой пользователь не просил.
+ */
+export function snapMoveFrame(rect, tolPx, imgW, imgH) {
+  const x = Number(rect?.x) || 0;
+  const y = Number(rect?.y) || 0;
+  const w = Number(rect?.w) || 0;
+  const h = Number(rect?.h) || 0;
+  const tol = Math.max(0, Number(tolPx) || 0);
+  if (!(tol > 0) || !(imgW > 0) || !(imgH > 0)) return { x, y, w, h };
+
+  const shift = (pos, size, bound) => {
+    const toStart = -pos; // левый/верхний край ложится на 0
+    const toEnd = bound - (pos + size); // правый/нижний — на границу
+    const startOk = Math.abs(toStart) <= tol;
+    const endOk = Math.abs(toEnd) <= tol;
+    if (startOk && endOk) return Math.abs(toStart) <= Math.abs(toEnd) ? toStart : toEnd;
+    if (startOk) return toStart;
+    if (endOk) return toEnd;
+    return 0;
+  };
+
+  return { x: x + shift(x, w, imgW), y: y + shift(y, h, imgH), w, h };
+}
+
+/**
+ * Какие края рамки стоят на границах изображения — для подсветки магнита.
+ * Допуск в пикселях источника: значения приходят из clampFrac после округления
+ * долей, поэтому «ровно 0» сравнивать нельзя.
+ */
+export function snappedEdges(rect, imgW, imgH, eps = 0.01) {
+  const x = Number(rect?.x) || 0;
+  const y = Number(rect?.y) || 0;
+  const w = Number(rect?.w) || 0;
+  const h = Number(rect?.h) || 0;
+  const tol = Math.max(0, Number(eps) || 0);
+  return {
+    left: Math.abs(x) <= tol,
+    right: Math.abs(x + w - Number(imgW || 0)) <= tol,
+    top: Math.abs(y) <= tol,
+    bottom: Math.abs(y + h - Number(imgH || 0)) <= tol,
+  };
+}
+
+/**
  * Значение виджета `image` записал штатный Mask Editor?
  *
  * Редактор пишет результат в виджет `image` файлом `clipspace-…` с аннотацией
@@ -382,8 +445,25 @@ export function isMaskEditorValue(value, currentSource = '') {
   return name !== String(currentSource ?? '');
 }
 
-/** Resize a source-space frame from a drag delta. */
-export function resizeFrame(start, dx, dy, kind, ratio, imgW, imgH, minPx = MIN_CROP_PX) {
+/**
+ * Resize a source-space frame from a drag delta.
+ *
+ * `snapTol` — допуск магнита в пикселях источника (0 = выключен): край,
+ * который двигает жест и который попал в границу изображения, встаёт на неё
+ * ровно. Прилипший край важнее сравнения дельт, иначе фиксированная
+ * пропорция отодвинула бы его от границы.
+ */
+export function resizeFrame(
+  start,
+  dx,
+  dy,
+  kind,
+  ratio,
+  imgW,
+  imgH,
+  minPx = MIN_CROP_PX,
+  snapTol = 0,
+) {
   let x0 = start.x;
   let y0 = start.y;
   let x1 = start.x + start.w;
@@ -402,6 +482,27 @@ export function resizeFrame(start, dx, dy, kind, ratio, imgW, imgH, minPx = MIN_
   if (north) y0 = Math.min(start.y + dy, y1 - minH);
   if (south) y1 = Math.max(start.y + start.h + dy, y0 + minH);
 
+  // Магнит: притягиваем только те края, которые двигает сам жест.
+  const tol = Math.max(0, Number(snapTol) || 0);
+  let snappedX = false;
+  let snappedY = false;
+  if (tol > 0) {
+    if (west && Math.abs(x0) <= tol) {
+      x0 = 0;
+      snappedX = true;
+    } else if (east && Math.abs(x1 - imgW) <= tol) {
+      x1 = imgW;
+      snappedX = true;
+    }
+    if (north && Math.abs(y0) <= tol) {
+      y0 = 0;
+      snappedY = true;
+    } else if (south && Math.abs(y1 - imgH) <= tol) {
+      y1 = imgH;
+      snappedY = true;
+    }
+  }
+
   const corner = (west || east) && (north || south);
   const horizontal = (west || east) && !(north || south);
   const vertical = (north || south) && !(west || east);
@@ -410,7 +511,8 @@ export function resizeFrame(start, dx, dy, kind, ratio, imgW, imgH, minPx = MIN_
     if (corner) {
       const dw = Math.abs(x1 - x0 - start.w);
       const dh = Math.abs(y1 - y0 - start.h) * ratio;
-      if (dh > dw) {
+      const heightWins = snappedY && !snappedX ? true : snappedX && !snappedY ? false : dh > dw;
+      if (heightWins) {
         const h = Math.max(minH, y1 - y0);
         const w = Math.max(minW, h * ratio);
         if (west) x0 = x1 - w;
@@ -1161,7 +1263,10 @@ function createEditor(node, widget) {
     }
 
     setRect(frameEl, fx, fy, fw, fh);
-    frameEl.style.borderColor = locked() ? '#7fe0a8' : '#ffffff';
+    // Цвет рамки — канал обратной связи магнита: пока край стоит на границе
+    // изображения, рамка подсвечена (только во время жеста).
+    const snagged = !!state.drag && Object.values(snappedEdges(r, state.img.w, state.img.h)).some(Boolean);
+    frameEl.style.borderColor = snagged ? SNAP_COLOR : locked() ? '#7fe0a8' : '#ffffff';
 
     const dim = Math.min(100, Math.max(0, Number(dimWidget?.value ?? 50))) / 100;
     setRect(dimEl, fx, fy, fw, fh);
@@ -1466,15 +1571,24 @@ function createEditor(node, widget) {
     const point = sourceFromLocal(localFromEvent(event, state.drag.view), state.drag.view);
     const dx = point.x - state.drag.start.x;
     const dy = point.y - state.drag.start.y;
+    // Магнит краёв: допуск задан в экранных пикселях, поэтому переводим его в
+    // пиксели источника масштабом, зафиксированным на pointerdown.
+    const snapTol = event.altKey ? 0 : SNAP_PX / Math.max(1e-6, state.drag.view.scale || 1);
 
     if (state.drag.kind === 'move') {
       const start = state.drag.rect;
       const delta = event.shiftKey ? axisDelta(dx, dy) : { dx, dy };
+      const moved = snapMoveFrame(
+        { x: start.x + delta.dx, y: start.y + delta.dy, w: start.w, h: start.h },
+        snapTol,
+        state.img.w,
+        state.img.h,
+      );
       moveOrResizeCrop({
-        x: (start.x + delta.dx) / state.img.w,
-        y: (start.y + delta.dy) / state.img.h,
-        w: start.w / state.img.w,
-        h: start.h / state.img.h,
+        x: moved.x / state.img.w,
+        y: moved.y / state.img.h,
+        w: moved.w / state.img.w,
+        h: moved.h / state.img.h,
       });
       return;
     }
@@ -1491,6 +1605,8 @@ function createEditor(node, widget) {
         dragRatio,
         state.img.w,
         state.img.h,
+        MIN_CROP_PX,
+        snapTol,
       ),
     );
   }
@@ -1503,6 +1619,8 @@ function createEditor(node, widget) {
     } catch {
       /* ignore */
     }
+    // Подсветка магнита живёт только во время жеста: гасим её этим же кадром.
+    if (state.img) layout();
   }
 
   stage.addEventListener('pointerdown', onPointerDown);

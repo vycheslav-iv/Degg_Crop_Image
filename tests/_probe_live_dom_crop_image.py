@@ -135,6 +135,30 @@ async def wait_for(cdp: CDP, expr: str, timeout: float = 60.0, label: str = ""):
     raise SystemExit(f"не дождались: {label or expr} (последнее: {last!r})")
 
 
+async def press_at(cdp: CDP, x: float, y: float, modifiers: int = 0) -> None:
+    """Нажать и НЕ отпускать — чтобы замерить состояние ПОСРЕДИ жеста."""
+    await cdp.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "modifiers": modifiers})
+    await cdp.call(
+        "Input.dispatchMouseEvent",
+        {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 1, "modifiers": modifiers},
+    )
+
+
+async def move_to(cdp: CDP, x: float, y: float, modifiers: int = 0) -> None:
+    await cdp.call(
+        "Input.dispatchMouseEvent",
+        {"type": "mouseMoved", "x": x, "y": y, "button": "left", "buttons": 1, "modifiers": modifiers},
+    )
+    await asyncio.sleep(0.1)
+
+
+async def release_at(cdp: CDP, x: float, y: float, modifiers: int = 0) -> None:
+    await cdp.call(
+        "Input.dispatchMouseEvent",
+        {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 0, "modifiers": modifiers},
+    )
+
+
 async def drag_mouse(cdp: CDP, x: float, y: float, dx: float, dy: float, steps: int = 10, modifiers: int = 0) -> None:
     await cdp.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "modifiers": modifiers})
     await cdp.call(
@@ -157,6 +181,48 @@ async def drag_mouse(cdp: CDP, x: float, y: float, dx: float, dy: float, steps: 
     await cdp.call(
         "Input.dispatchMouseEvent",
         {"type": "mouseReleased", "x": x + dx, "y": y + dy, "button": "left", "clickCount": 1, "buttons": 0, "modifiers": modifiers},
+    )
+
+
+def snap_plan_js(handle: str, want: float) -> str:
+    """План жеста для проверки магнита: где ручка и на сколько её тянуть.
+
+    `handle` — селектор внутри корня редактора («h[data-h=\"w\"]» или
+    «frame»), `want` — целевое положение левого края в пикселях источника
+    (внутри допуска магнита, но не на самой границе). Смещение переводится в
+    CSS-пиксели масштабом сцены — тот же, которым считает редактор.
+    """
+    return (
+        "(() => {"
+        " const e = window.__probeCrop.__deggCrop;"
+        " const st = e.state;"
+        f" const el = e.widget.querySelector('.degg-crop__{handle}');"
+        " const r = el.getBoundingClientRect();"
+        " const x0 = st.frac.x * st.img.w;"
+        f" const want = {want};"
+        " return { x: r.x + r.width / 2, y: r.y + r.height / 2, dx: -(x0 - want) * st.scale, scale: st.scale };"
+        "})()"
+    )
+
+
+def snap_plan_css_js(handle: str, off_px: float) -> str:
+    """План жеста, где левый край останавливается в `off_px` ЭКРАННЫХ пикселях
+    от границы изображения — замер силы магнита (его допуска).
+
+    Смещение переводится в пиксели источника масштабом сцены, поэтому
+    проверяется именно экранный допуск, а не зависящий от зума.
+    """
+    return (
+        "(() => {"
+        " const e = window.__probeCrop.__deggCrop;"
+        " const st = e.state;"
+        f" const el = e.widget.querySelector('.degg-crop__{handle}');"
+        " const r = el.getBoundingClientRect();"
+        " const x0 = st.frac.x * st.img.w;"
+        f" const want = {off_px} / st.scale;"
+        " return { x: r.x + r.width / 2, y: r.y + r.height / 2,"
+        " dx: -(x0 - want) * st.scale, scale: st.scale };"
+        "})()"
     )
 
 
@@ -1376,6 +1442,96 @@ async def main() -> int:
                 "Shift при перемещении держит одну ось",
                 abs(af.get("y", 0) - 0.1) < 0.02 and abs(af.get("x", 0) - 0.1) > 0.02,
                 af,
+            )
+
+            # ── Магнит краёв: край, доведённый до границы изображения, встаёт
+            # ровно на неё, а рамка на время прилипания подсвечена. Ведём край к
+            # 3 px источника (внутри допуска) и меряем состояние ПОСРЕДИ жеста.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " const l = n.widgets.find((x) => x.name === 'lock_ratio');"
+                " a.value = 'free'; a.callback && a.callback('free');"
+                " l.value = false; l.callback && l.callback(false);"
+                " window.__setFrame({ x: 0.3, y: 0.25, w: 0.4, h: 0.4 }); return true; })()"
+            )
+            await asyncio.sleep(0.25)
+            snap_w = await cdp.eval(snap_plan_js('h[data-h="w"]', 3))
+            await press_at(cdp, snap_w["x"], snap_w["y"])
+            await move_to(cdp, snap_w["x"] + snap_w["dx"], snap_w["y"])
+            mid_resize = await cdp.eval(STATE_JS)
+            await release_at(cdp, snap_w["x"] + snap_w["dx"], snap_w["y"])
+            await asyncio.sleep(0.3)
+            snapped_resize = await cdp.eval(STATE_JS)
+            check(
+                "магнит: левый край встал ровно на границу изображения",
+                abs((snapped_resize.get("frac") or {}).get("x", 1)) < 1e-6,
+                snapped_resize.get("frac"),
+            )
+            check(
+                "магнит: прилипшая рамка подсвечена во время жеста",
+                "255, 207, 92" in (mid_resize.get("frameBorder") or ""),
+                mid_resize.get("frameBorder"),
+            )
+            check(
+                "магнит: после отпускания подсветка снята",
+                "255, 207, 92" not in (snapped_resize.get("frameBorder") or ""),
+                snapped_resize.get("frameBorder"),
+            )
+
+            # Перенос рамки: левый край подводим к границе, размер не меняется.
+            await cdp.eval("(() => window.__setFrame({ x: 0.2, y: 0.2, w: 0.4, h: 0.4 }))()")
+            await asyncio.sleep(0.25)
+            snap_move = await cdp.eval(snap_plan_js("frame", 3))
+            await press_at(cdp, snap_move["x"], snap_move["y"])
+            await move_to(cdp, snap_move["x"] + snap_move["dx"], snap_move["y"])
+            await release_at(cdp, snap_move["x"] + snap_move["dx"], snap_move["y"])
+            await asyncio.sleep(0.3)
+            snapped_move = await cdp.eval(STATE_JS)
+            sm = snapped_move.get("frac") or {}
+            check("магнит переноса: левый край встал на границу", abs(sm.get("x", 1)) < 1e-6, sm)
+            check("магнит переноса: размер рамки не изменился", abs(sm.get("w", 0) - 0.4) < 1e-3, sm)
+
+            # Сила магнита = его допуск в ЭКРАННЫХ пикселях: край, остановленный
+            # в 18 px от границы, обязан прилипнуть, в 26 px — остаться на месте.
+            # Это и есть замер «сильнее/слабее»: при допуске меньше 18 px первая
+            # проверка красная (край стоит в 18 px, так было с 7, 12 и 16),
+            # вторая зелёная всегда (26 > любого разумного допуска) — она держит
+            # верхнюю границу, чтобы магнит не начал хватать рамку на полпути.
+            for want_px, expect_snap, snap_label in (
+                (18, True, "магнит: край в 18 экранных px от границы прилипает"),
+                (26, False, "магнит: край в 26 экранных px от границы не прилипает"),
+            ):
+                await cdp.eval("(() => window.__setFrame({ x: 0.2, y: 0.2, w: 0.4, h: 0.4 }))()")
+                await asyncio.sleep(0.25)
+                plan = await cdp.eval(snap_plan_css_js('h[data-h="w"]', want_px))
+                await press_at(cdp, plan["x"], plan["y"])
+                await move_to(cdp, plan["x"] + plan["dx"], plan["y"])
+                await release_at(cdp, plan["x"] + plan["dx"], plan["y"])
+                await asyncio.sleep(0.3)
+                strength = await cdp.eval(STATE_JS)
+                sf = strength.get("frac") or {}
+                sn = strength.get("natural") or [1, 1]
+                edge_css = sf.get("x", 1) * sn[0] * plan["scale"]
+                check(
+                    snap_label,
+                    edge_css < 0.5 if expect_snap else abs(edge_css - want_px) <= 3,
+                    {"edge_css": edge_css, "frac": sf, "natural": sn},
+                )
+
+            # Alt выключает магнит: тот же жест, но край остаётся в 3 px от неё.
+            await cdp.eval("(() => window.__setFrame({ x: 0.3, y: 0.25, w: 0.4, h: 0.4 }))()")
+            await asyncio.sleep(0.25)
+            alt_w = await cdp.eval(snap_plan_js('h[data-h="w"]', 3))
+            await press_at(cdp, alt_w["x"], alt_w["y"], modifiers=1)
+            await move_to(cdp, alt_w["x"] + alt_w["dx"], alt_w["y"], modifiers=1)
+            await release_at(cdp, alt_w["x"] + alt_w["dx"], alt_w["y"], modifiers=1)
+            await asyncio.sleep(0.3)
+            alt_done = await cdp.eval(STATE_JS)
+            check(
+                "магнит выключается Alt: край остаётся у границы, но не на ней",
+                0.0001 < (alt_done.get("frac") or {}).get("x", 0) < 0.01,
+                alt_done.get("frac"),
             )
 
             # «Зафиксировано» применяет ЗАХВАЧЕННЫЕ пропорции при ресайзе:

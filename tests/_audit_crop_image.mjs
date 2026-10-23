@@ -415,6 +415,41 @@ check(
   /sourceFromLocal\(localFromEvent\(event,\s*state\.drag\.view\),\s*state\.drag\.view\)/.test(JS),
 );
 
+// ── Магнит краёв рамки к границам изображения ────────────────────────────────
+// Допуск обязан быть в ЭКРАННЫХ пикселях: в пикселях источника привязка
+// исчезала бы при отдалении и тянула бы десятками пикселей при приближении.
+check(
+  "JS: перенос рамки прогоняется через магнит",
+  /snapMoveFrame\(\s*\{[\s\S]{0,120}?start\.x \+ delta\.dx[\s\S]{0,160}?snapTol,/.test(JS),
+);
+check(
+  "JS: изменение размера прогоняется через магнит (snapTol в resizeFrame)",
+  /resizeFrame\([\s\S]{0,220}?state\.img\.h,\s*MIN_CROP_PX,\s*snapTol,/.test(JS),
+);
+check(
+  "JS: Alt отключает примагничивание, допуск переводится из экранных пикселей",
+  /event\.altKey \? 0 : SNAP_PX \/ Math\.max/.test(JS) && /const SNAP_PX = \d+;/.test(JS),
+);
+check(
+  "JS: прилипание видно — рамка подсвечивается, пока край на границе",
+  /Object\.values\(snappedEdges\(r, state\.img\.w, state\.img\.h\)\)\.some\(Boolean\)/.test(JS) &&
+    /snagged \? SNAP_COLOR/.test(JS),
+);
+check(
+  "JS: фиксированная пропорция не отменяет прилипание (край важнее дельт)",
+  /snappedY && !snappedX \? true : snappedX && !snappedY \? false : dh > dw/.test(JS),
+);
+// Сила магнита — это его допуск: слишком узкий (7 px) рука не чувствует,
+// слишком широкий (больше 20 px) хватает рамку там, где целили мимо. Границы
+// диапазона замерены живой пробой (край в 10 px прилипает, в 18 px — нет).
+const snapPxMatch = JS.match(/const SNAP_PX = ([\d.]+);/);
+const snapPx = snapPxMatch ? Number(snapPxMatch[1]) : NaN;
+check(
+  "JS: допуск магнита в диапазоне 10..20 экранных пикселей (сила прилипания)",
+  Number.isFinite(snapPx) && snapPx >= 10 && snapPx <= 20,
+  `SNAP_PX = ${snapPxMatch ? snapPxMatch[1] : "не найден"}`,
+);
+
 // ── Координаты — нативные опции ноды, «?» — в превью ────────────────────────
 check(
   "Python: координаты — INT-опции сразу под lock_ratio",
