@@ -408,6 +408,7 @@ async def main() -> int:
                 "fill",
                 "dim_outside",
                 "golden_ratio",
+                "snap_edges",
                 "mask_file",
                 "image",
             ]
@@ -1493,14 +1494,14 @@ async def main() -> int:
             check("магнит переноса: размер рамки не изменился", abs(sm.get("w", 0) - 0.4) < 1e-3, sm)
 
             # Сила магнита = его допуск в ЭКРАННЫХ пикселях: край, остановленный
-            # в 18 px от границы, обязан прилипнуть, в 26 px — остаться на месте.
-            # Это и есть замер «сильнее/слабее»: при допуске меньше 18 px первая
-            # проверка красная (край стоит в 18 px, так было с 7, 12 и 16),
-            # вторая зелёная всегда (26 > любого разумного допуска) — она держит
-            # верхнюю границу, чтобы магнит не начал хватать рамку на полпути.
+            # в 14 px от границы, обязан прилипнуть, в 18 px — остаться на месте.
+            # Это и есть замер «сильнее/слабее»: при допуске меньше 14 px первая
+            # проверка красная, при допуске 18 и больше — вторая. Подбор шёл
+            # по замеру: 7 → «не чувствуется», 20 → «сильно», 16 — снято с
+            # пользователем (в 18 px край НЕ прилипает).
             for want_px, expect_snap, snap_label in (
-                (18, True, "магнит: край в 18 экранных px от границы прилипает"),
-                (26, False, "магнит: край в 26 экранных px от границы не прилипает"),
+                (14, True, "магнит: край в 14 экранных px от границы прилипает"),
+                (18, False, "магнит: край в 18 экранных px от границы не прилипает"),
             ):
                 await cdp.eval("(() => window.__setFrame({ x: 0.2, y: 0.2, w: 0.4, h: 0.4 }))()")
                 await asyncio.sleep(0.25)
@@ -1518,6 +1519,61 @@ async def main() -> int:
                     edge_css < 0.5 if expect_snap else abs(edge_css - want_px) <= 3,
                     {"edge_css": edge_css, "frac": sf, "natural": sn},
                 )
+
+            # Кнопка «Привязка к краю» (snap_edges) — самая нижняя на теле ноды,
+            # под «Сеткой золотого сечения». Выключена → магнит не работает:
+            # тот же жест в 5 экранных px от границы край НЕ прилипает; включена
+            # → прилипает. Значение живёт в воркфлоу (виджет с контрактным
+            # default = true), поэтому в старых воркфлоу оно чинится к true.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const a = n.widgets.find((x) => x.name === 'aspect_ratio');"
+                " const l = n.widgets.find((x) => x.name === 'lock_ratio');"
+                " a.value = 'free'; a.callback && a.callback('free');"
+                " l.value = false; l.callback && l.callback(false);"
+                " window.__setFrame({ x: 0.3, y: 0.25, w: 0.4, h: 0.4 }); return true; })()"
+            )
+            snap_widget = await cdp.eval(
+                "(() => { const w = window.__widget('snap_edges');"
+                " if (!w) return null; w.value = true;"
+                " w.callback && w.callback(true); return w.value; })()"
+            )
+            check(
+                "кнопка «Привязка к краю» есть на теле ноды (snap_edges)",
+                snap_widget is True,
+                snap_widget,
+            )
+
+            for want_on in (False, True):
+                await cdp.eval(
+                    f"(() => {{ const w = window.__widget('snap_edges');"
+                    f" if (w) {{ w.value = {str(bool(want_on)).lower()};"
+                    f" w.callback && w.callback({str(bool(want_on)).lower()}); }}"
+                    f" window.__setFrame({{ x: 0.3, y: 0.25, w: 0.4, h: 0.4 }});"
+                    f" return w ? w.value : null; }})()"
+                )
+                await asyncio.sleep(0.25)
+                off_plan = await cdp.eval(snap_plan_css_js('h[data-h="w"]', 5))
+                await press_at(cdp, off_plan["x"], off_plan["y"])
+                await move_to(cdp, off_plan["x"] + off_plan["dx"], off_plan["y"])
+                await release_at(cdp, off_plan["x"] + off_plan["dx"], off_plan["y"])
+                await asyncio.sleep(0.3)
+                toggled = await cdp.eval(STATE_JS)
+                tf = toggled.get("frac") or {}
+                tn = toggled.get("natural") or [1, 1]
+                edge = tf.get("x", 1) * tn[0] * off_plan["scale"]
+                if want_on:
+                    check(
+                        "привязка включена: край в 5 экранных px от границы прилипает",
+                        edge < 0.5,
+                        {"edge_css": edge, "frac": tf},
+                    )
+                else:
+                    check(
+                        "привязка выключена: край в 5 экранных px от границы НЕ прилипает",
+                        edge > 1.0,
+                        {"edge_css": edge, "frac": tf},
+                    )
 
             # Alt выключает магнит: тот же жест, но край остаётся в 3 px от неё.
             await cdp.eval("(() => window.__setFrame({ x: 0.3, y: 0.25, w: 0.4, h: 0.4 }))()")
@@ -2059,7 +2115,13 @@ async def main() -> int:
                 " return { lock: g('lock_ratio'), cx: g('center_x'), cy: g('center_y'),"
                 "  fw: g('frame_w'), fh: g('frame_h'), aspect: g('aspect_ratio'),"
                 "  mp: g('megapixels'), mult: g('multiplicity'), resample: g('resample'),"
-                "  fill: g('fill'), dim: g('dim_outside') }; })()"
+                "  fill: g('fill'), dim: g('dim_outside'),"
+                # Кадр читается ТУТ ЖЕ, а не отдельным запросом: асинхронный
+                # сброс от loadSource меняет состояние между двумя чтениями,
+                # и сравнение «координаты против кадра» становилось гонкой.
+                "  frac: n.__deggCrop ? n.__deggCrop.state.frac : null,"
+                "  natural: n.__deggCrop && n.__deggCrop.state.img"
+                "   ? [n.__deggCrop.state.img.w, n.__deggCrop.state.img.h] : [1, 1] }; })()"
             )
             rv = (restored or {}).get("lock")
             rv = {
@@ -2085,9 +2147,8 @@ async def main() -> int:
             )
             # Координаты и размер — «зеркала» состояния: редактор пересчитывает их
             # сам из crop_rect/output_size, поэтому берутся не из воркфлоу.
-            derived = await cdp.eval(STATE_JS)
-            dfrac = derived.get("frac") or {}
-            dnat = derived.get("natural") or [1, 1]
+            dfrac = (restored or {}).get("frac") or {}
+            dnat = (restored or {}).get("natural") or [1, 1]
             exp_cx = round((dfrac.get("x", 0) + dfrac.get("w", 0) / 2 - 0.5) * dnat[0])
             exp_cy = round((dfrac.get("y", 0) + dfrac.get("h", 0) / 2 - 0.5) * dnat[1])
             check(

@@ -672,6 +672,14 @@ class DeggCropImage:
                         "tooltip": "Display only: golden-ratio grid over the frame.",
                     },
                 ),
+                "snap_edges": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Display only: while dragging, frame edges snap to the image "
+                        "bounds. Alt while dragging disables snapping too.",
+                    },
+                ),
             },
         }
 
@@ -744,6 +752,7 @@ class DeggCropImage:
         crop_rect="",
         output_size="",
         golden_ratio=False,  # только отображение (сетка в превью), сервер не читает
+        snap_edges=True,  # только отображение (магнит краёв), сервер не читает
         mask=None,
     ):
         # Источник: подключённый сокет главный; иначе — файл из input

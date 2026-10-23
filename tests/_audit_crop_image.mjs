@@ -90,6 +90,7 @@ const EXPECTED_OPTIONAL = [
   "aspect_ratio",
   "mask",
   "golden_ratio",
+  "snap_edges",
 ];
 const optionalBlock = PY.slice(PY.indexOf('"optional": {'));
 const optionalNames = [...optionalBlock.matchAll(/^ {16}"([a-z_]+)":/gm)].map((m) => m[1]);
@@ -426,9 +427,13 @@ check(
   "JS: изменение размера прогоняется через магнит (snapTol в resizeFrame)",
   /resizeFrame\([\s\S]{0,220}?state\.img\.h,\s*MIN_CROP_PX,\s*snapTol,/.test(JS),
 );
+// Детектор жил под старой формулой `event.altKey ? 0 : SNAP_PX` — после
+// добавления кнопки «Привязка к краю» он обновлён (задача контракт меняет,
+// откатывать её ради зелёного нельзя), а мутация проверяет, что он не слепой.
 check(
   "JS: Alt отключает примагничивание, допуск переводится из экранных пикселей",
-  /event\.altKey \? 0 : SNAP_PX \/ Math\.max/.test(JS) && /const SNAP_PX = \d+;/.test(JS),
+  /event\.altKey \|\| !snapEnabled\(\) \? 0 : SNAP_PX \/ Math\.max/.test(JS) &&
+    /const SNAP_PX = [\d.]+;/.test(JS),
 );
 check(
   "JS: прилипание видно — рамка подсвечивается, пока край на границе",
@@ -444,6 +449,30 @@ check(
 // диапазона замерены живой пробой (край в 10 px прилипает, в 18 px — нет).
 const snapPxMatch = JS.match(/const SNAP_PX = ([\d.]+);/);
 const snapPx = snapPxMatch ? Number(snapPxMatch[1]) : NaN;
+check(
+  "Python: snap_edges — необязательный BOOLEAN с включённым по умолчанию",
+  /"snap_edges":\s*\(\s*"BOOLEAN"/.test(PY) &&
+    /"snap_edges":\s*\(\s*"BOOLEAN",\s*\{\s*"default":\s*True/.test(PY) &&
+    /snap_edges=True,\s*# только отображение/.test(PY),
+);
+check(
+  "locales/ru: подписи «Привязка к краю» (snap_edges)",
+  (RU[NODE]?.inputs?.snap_edges?.name ?? "") === "Привязка к краю",
+);
+check(
+  "locales/en: подписи «Snap to edges» (snap_edges)",
+  (EN[NODE]?.inputs?.snap_edges?.name ?? "") === "Snap to edges",
+);
+check(
+  "JS: выключенная привязка обнуляет допуск магнита (snap_edges)",
+  /widgetByName\(node, 'snap_edges'\)/.test(JS) &&
+    /function snapEnabled\(\)/.test(JS) &&
+    /event\.altKey \|\| !snapEnabled\(\) \? 0 : SNAP_PX/.test(JS),
+);
+check(
+  "JS: в старых воркфлоу (позиционный сдвиг) привязка чинится к true",
+  /typeof snap\.value !== 'boolean'/.test(JS) && /snap\.value = true/.test(JS),
+);
 check(
   "JS: допуск магнита в диапазоне 10..20 экранных пикселей (сила прилипания)",
   Number.isFinite(snapPx) && snapPx >= 10 && snapPx <= 20,
@@ -587,7 +616,7 @@ const WIDGET_ORDER_EXPECTED = [
   "image_file", "upload_file", "preview",
   "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
   "megapixels", "multiplicity", "resample", "fill", "dim_outside", "golden_ratio",
-  "crop_rect", "output_size", "mask_file", "image",
+  "snap_edges", "crop_rect", "output_size", "mask_file", "image",
 ];
 const orderBlock = (JS.slice(JS.indexOf("const WIDGET_ORDER = [")).split("];")[0] || "");
 const orderFound = [...orderBlock.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);

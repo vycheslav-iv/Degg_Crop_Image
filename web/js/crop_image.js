@@ -36,6 +36,9 @@ const WIDGET_ORDER = [
   'fill',
   'dim_outside',
   'golden_ratio',
+  // Кнопка привязки к краю — под «Сеткой золотого сечения», в самом низу
+  // видимой части ноды.
+  'snap_edges',
   // Служебные виджеты состояния и выбор файла — в самом конце: старые
   // воркфлоу (без именованной карты) хранят значения виджетов позиционно,
   // и новый виджет в начале списка сдвинул бы все значения на шаг.
@@ -58,11 +61,11 @@ const EDGE_HIT = 12;
 // ЭКРАННЫХ пикселей считается прилипанием. Допуск задан в экранных, а не в
 // пикселях источника: иначе при отдалении привязку не почувствовать, а при
 // приближении она тянула бы на десятки экранных пикселей.
-// 7 px было почти неощутимо (нужно было целиться в край), 12 и 16 — всё ещё
-// просили усилить; 20 — потолок: ловит край уверенно, но на полпути не хватает
-// (замер живой пробой: в 18 экранных px от границы край прилипает, в 26 —
-// остаётся на месте; сверху значение ограничивает аудит: 10..20).
-const SNAP_PX = 20;
+// Сила подбиралась по замеру живой пробы, а не на глаз: 7 — «почти неощутимо»,
+// 20 — «сильно», 16 — снято с пользователем: в 14 экранных px от границы край
+// прилипает, в 18 — остаётся на месте (сверху значение ограничивает аудит:
+// 10..20, выше магнит хватает рамку на полпути).
+const SNAP_PX = 16;
 // Цвет рамки, пока край прилип к границе изображения (обратная связь магнита).
 const SNAP_COLOR = '#ffcf5c';
 // Предел доли кадра: уходить за кадром дальше бессмысленно.
@@ -128,7 +131,7 @@ const LABELS = {
     help: [
       'Перетаскивание внутри рамки — перемещение.',
       'Shift + перетаскивание внутри — строго по горизонтали или вертикали.',
-      'Края рамки примагничиваются к границам изображения; Alt + перетаскивание — без примагничивания.',
+      'Края рамки примагничиваются к границам изображения; Alt + перетаскивание или кнопка «Привязка к краю» — без примагничивания.',
       'Углы и стороны рамки — изменение размера.',
       'Shift + угол/сторона при «Свободно» — масштаб с сохранением текущих пропорций.',
       '«Зафиксировано» фиксирует пропорции, которые есть у рамки сейчас.',
@@ -162,7 +165,7 @@ const LABELS = {
     help: [
       'Drag inside the frame to move it.',
       'Shift + drag inside — strictly horizontal or vertical movement.',
-      'Frame edges snap to the image bounds; Alt + drag disables snapping.',
+      'Frame edges snap to the image bounds; Alt + drag or the "Snap to edges" toggle disables snapping.',
       'Frame corners and edges resize it.',
       'Shift + corner/edge while Free — scale keeping the current proportions.',
       'Locked freezes the proportions the frame has right now.',
@@ -876,6 +879,13 @@ function createEditor(node, widget) {
   const mpWidget = widgetByName(node, 'megapixels');
   const fillWidget = widgetByName(node, 'fill');
   const goldenWidget = widgetByName(node, 'golden_ratio');
+  const snapWidget = widgetByName(node, 'snap_edges');
+
+  /** Привязка к краю включена? Значение живёт в воркфлоу (виджет),
+   * по умолчанию — включена; Alt во время жеста тоже выключает магнит. */
+  function snapEnabled() {
+    return snapWidget?.value !== false;
+  }
 
   if (cropWidget) cropWidget.hidden = true;
   setOptionLabels(aspectWidget, labels().aspect);
@@ -1572,8 +1582,9 @@ function createEditor(node, widget) {
     const dx = point.x - state.drag.start.x;
     const dy = point.y - state.drag.start.y;
     // Магнит краёв: допуск задан в экранных пикселях, поэтому переводим его в
-    // пиксели источника масштабом, зафиксированным на pointerdown.
-    const snapTol = event.altKey ? 0 : SNAP_PX / Math.max(1e-6, state.drag.view.scale || 1);
+    // пиксели источника масштабом, зафиксированным на pointerdown. Кнопка
+    // «Привязка к краю» и Alt выключают магнит целиком.
+    const snapTol = event.altKey || !snapEnabled() ? 0 : SNAP_PX / Math.max(1e-6, state.drag.view.scale || 1);
 
     if (state.drag.kind === 'move') {
       const start = state.drag.rect;
@@ -2105,7 +2116,7 @@ function createEditor(node, widget) {
 
   // Изменение «косметики» и параметров выхода перерисовывает сцену сразу:
   // без этого затемнение и плашка отстают до следующего resize/drag.
-  for (const widget of [dimWidget, fillWidget, multWidget, goldenWidget]) {
+  for (const widget of [dimWidget, fillWidget, multWidget, goldenWidget, snapWidget]) {
     onWidgetChange(widget, () => {
       commit();
     });
@@ -2170,6 +2181,11 @@ function createEditor(node, widget) {
     }
     const lock = widgetByName(node, 'lock_ratio');
     if (lock && typeof lock.value !== 'boolean') lock.value = false;
+    // Привязка к краю: в старых воркфлоу позиционное восстановление могло
+    // сдвинуть значения на шаг (виджет новый), и в булево попадала бы строка
+    // crop_rect — молча включённый магнит. Безопасное значение — включён.
+    const snap = widgetByName(node, 'snap_edges');
+    if (snap && typeof snap.value !== 'boolean') snap.value = true;
     for (const name of ['center_x', 'center_y', 'frame_w', 'frame_h']) {
       const widget = widgetByName(node, name);
       if (widget && !Number.isFinite(Number(widget.value))) widget.value = 0;

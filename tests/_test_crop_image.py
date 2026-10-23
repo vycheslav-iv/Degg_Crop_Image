@@ -643,6 +643,7 @@ INTERFACE_INPUTS = [
     "frame_h",
     "aspect_ratio",
     "golden_ratio",
+    "snap_edges",
 ]
 check(
     "интерфейсные входы объявлены необязательными",
@@ -655,6 +656,18 @@ check(
     types["optional"]["golden_ratio"][0] == "BOOLEAN"
     and types["optional"]["golden_ratio"][1]["default"] is False,
     types["optional"]["golden_ratio"],
+)
+check(
+    "snap_edges — переключатель привязки к краю, по умолчанию включён",
+    types["optional"]["snap_edges"][0] == "BOOLEAN"
+    and types["optional"]["snap_edges"][1]["default"] is True,
+    types["optional"]["snap_edges"],
+)
+check(
+    "snap_edges объявлен сразу после golden_ratio (в самом низу видимых виджетов)",
+    list(types["optional"]).index("snap_edges")
+    == list(types["optional"]).index("golden_ratio") + 1,
+    list(types["optional"]),
 )
 # ComfyUI передаёт все входы как именованные аргументы crop() — любой вход
 # без параметра в сигнатуре роняет ноду при запуске (TypeError).

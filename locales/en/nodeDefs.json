@@ -67,6 +67,10 @@
         "name": "Golden ratio grid",
         "tooltip": "Display only: golden-ratio grid over the frame."
       },
+      "snap_edges": {
+        "name": "Snap to edges",
+        "tooltip": "Display only: frame edges snap to the image bounds while dragging. Alt while dragging disables snapping too."
+      },
       "crop_rect": {
         "name": "Crop rectangle",
         "tooltip": "Internal: normalized crop rectangle, written by the node UI."
