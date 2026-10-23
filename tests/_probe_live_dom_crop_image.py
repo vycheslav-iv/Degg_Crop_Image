@@ -33,6 +33,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -165,7 +166,7 @@ INSTALL_JS = r"""
   window.addEventListener('error', (e) => window.__probeErrors.push('error: ' + (e.message || '')));
   window.addEventListener('unhandledrejection', (e) => window.__probeErrors.push('reject: ' + String(e.reason)));
   const origError = console.error;
-  console.error = (...args) => { window.__probeErrors.push('console.error: ' + args.map(String).join(' ')); return origError.apply(console, args); };
+  console.error = (...args) => { window.__probeErrors.push('console.error: ' + args.map((a) => { if (a instanceof Error) return a.stack; if (a && typeof a === 'object') { try { return JSON.stringify(a); } catch (e) { return Object.prototype.toString.call(a); } } return String(a); }).join(' ')); return origError.apply(console, args); };
   return 'installed';
 })()
 """
@@ -470,12 +471,15 @@ async def main() -> int:
                 and (source_ref or {}).get("image") == (source_ref or {}).get("file"),
                 source_ref,
             )
+            # src — URL: имя файла в нём закодировано (пробелы, скобки), поэтому
+            # сверяем с раскодированным адресом, а не с сырой строкой.
+            _src = unquote_plus(file_after.get("src") or "")
             check(
                 "без сокета превью показывает выбранный файл",
                 bool((file_state or {}).get("value"))
-                and (file_state or {}).get("value") in (file_after.get("src") or "")
-                and "type=input" in (file_after.get("src") or ""),
-                {"file": (file_state or {}).get("value"), "src": file_after.get("src")},
+                and (file_state or {}).get("value") in _src
+                and "type=input" in _src,
+                {"file": (file_state or {}).get("value"), "src": _src},
             )
             natural_file = file_after.get("natural") or [0, 0]
             check(
@@ -615,14 +619,25 @@ async def main() -> int:
                 " const el = n.__deggCrop.widget.querySelector('.degg-crop__masklayer');"
                 " if (!el) return null;"
                 " const r = el.getBoundingClientRect();"
-                " return { src: el.getAttribute('src') || '', display: el.style.display,"
+                " const img = n.__deggCrop.widget.querySelector('.degg-crop__img');"
+                " return { src: el.getAttribute('src') || '', display: getComputedStyle(el).display,"
+                "   imgVisibility: img ? getComputedStyle(img).visibility : '',"
                 "   w: Math.round(r.width), h: Math.round(r.height) }; })()"
             )
+            # Файл `clipspace-painted-masked-1.png` здесь ВЫДУМАННЫЙ (404).
+            # Ссылка дойти должна, а показывать нечего: слой остаётся скрытым,
+            # источник видим. Положительный случай (реальный файл редактора
+            # виден в превью) — `tests/_probe_live_mask_preview.py`.
             check(
-                "Mask Editor: слой маски показан в превью",
+                "Mask Editor: ссылка на файл дошла до слоя",
                 bool((mask_layer or {}).get("src"))
-                and "clipspace-painted-masked-1.png" in (mask_layer or {}).get("src", "")
-                and (mask_layer or {}).get("display") != "none",
+                and "clipspace-painted-masked-1.png" in (mask_layer or {}).get("src", ""),
+                mask_layer,
+            )
+            check(
+                "Mask Editor: несуществующий файл не скрывает источник",
+                (mask_layer or {}).get("display") != "block"
+                and (mask_layer or {}).get("imgVisibility") != "hidden",
                 mask_layer,
             )
             # Убираем маску, чтобы дальнейшие сценарии шли как раньше.
@@ -635,6 +650,90 @@ async def main() -> int:
                 " return 1; })()"
             )
             await asyncio.sleep(0.3)
+            # ── Покраска и смена источника ───────────────────────────────────
+            # Paint — файл СТАРОЙ картинки (в нём и её RGB): после выбора другой
+            # картинки он молча перекрыл бы её, поэтому маска сбрасывается.
+            # Та же запись (тот же файл) маску НЕ чистит — в этом случае выбор
+            # не менялся. Перезалив под тем же именем ловится IS_CHANGED.
+            mask_reset = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const editor = (n.widgets || []).find((x) => x.name === 'image');"
+                " const file = (n.widgets || []).find((x) => x.name === 'image_file');"
+                " const mask = (n.widgets || []).find((x) => x.name === 'mask_file');"
+                " if (!file || !mask || !editor) return { ok: false };"
+                " const before = String(file.value || '');"
+                " const pick = (v) => { file.value = v;"
+                "   file.callback && file.callback(v, app.canvas, n); };"
+                " editor.value = 'clipspace-painted-masked-9.png [input]';"
+                " editor.callback && editor.callback(editor.value, app.canvas, n);"
+                " const painted = String(mask.value || '');"
+                " pick(before);"
+                " const keptSame = String(mask.value || '');"
+                " pick('example.png');"
+                " const afterOther = String(mask.value || '');"
+                " return { ok: true, painted, keptSame, afterOther, before }; })()"
+            )
+            await asyncio.sleep(0.5)
+            check(
+                "покраска: запись редактора доезжает до mask_file (живая проба)",
+                "clipspace-painted-masked-9" in str((mask_reset or {}).get("painted") or ""),
+                mask_reset,
+            )
+            check(
+                "покраска: тот же файл в комбо маску не сбрасывает",
+                "clipspace-painted-masked-9" in str((mask_reset or {}).get("keptSame") or ""),
+                mask_reset,
+            )
+            check(
+                "покраска: выбор ДРУГОГО файла сбрасывает mask_file",
+                (mask_reset or {}).get("afterOther") == "",
+                mask_reset,
+            )
+            # Нет источника / файл не открылся — нода перестаёт быть «картинкой»,
+            # иначе Mask Editor открывает исчезнувшее изображение. Проверяем БЕЗ
+            # провода: с подключённым проводом источник есть, и node.imgs обязан
+            # держать картинку провода — по ней рисуют маску (ТЗ §3).
+            await cdp.eval(
+                "(() => { const c = window.__probeCrop, l = window.__probeLoad;"
+                " return l.disconnectOutput(0, c); })()"
+            )
+            await asyncio.sleep(0.8)
+            lost = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const file = (n.widgets || []).find((x) => x.name === 'image_file');"
+                " if (!file) return { ok: false };"
+                " const before = String(file.value || '');"
+                " file.value = 'degg-no-such-file-xyz.png';"
+                " file.callback && file.callback(file.value, app.canvas, n);"
+                " return { ok: true, before }; })()"
+            )
+            await asyncio.sleep(1.2)
+            lost_after = await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " return { imgs: (n.imgs || []).length,"
+                "   src: (n.__deggCrop.widget.querySelector('.degg-crop__img') || {}).getAttribute"
+                "     ? (n.__deggCrop.widget.querySelector('.degg-crop__img').getAttribute('src') || '')"
+                "     : '' }; })()"
+            )
+            check(
+                "нет файла: node.imgs погашен (редактор не откроет пустоту)",
+                int((lost_after or {}).get("imgs") or 0) == 0,
+                {"lost": lost, "after": lost_after},
+            )
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const file = (n.widgets || []).find((x) => x.name === 'image_file');"
+                " const back = %r;"
+                " if (file) { file.value = back;"
+                "   file.callback && file.callback(back, app.canvas, n); }"
+                " return 1; })()" % str((lost or {}).get("before") or "")
+            )
+            # Провод возвращаем: дальше превью снова берётся из подключения.
+            await cdp.eval(
+                "(() => { const c = window.__probeCrop, l = window.__probeLoad;"
+                " return l.connect(0, c, window.__probeImageSlot); })()"
+            )
+            await asyncio.sleep(1.0)
             check(
                 "после загрузки превью показывает загруженный файл",
                 bool((uploaded or {}).get("value"))
@@ -2005,18 +2104,19 @@ async def main() -> int:
                 " return 1; })()"
             )
             await asyncio.sleep(0.3)
-            await cdp.eval(
-                "(() => { const c = window.comfyAPI?.app?.app?.commandStore;"
-                " if (c && typeof c.execute === 'function') {"
-                "   c.execute('Comfy.MaskEditor.OpenMaskEditor'); return 1; }"
-                " const A = app.constructor;"
-                " A.clipspace_return_node = window.__probeCrop;"
-                " if (typeof A.open_maskeditor === 'function') A.open_maskeditor();"
-                " return 2; })()"
+            # Штатная точка входа — команда фронтенда (палитра команд и
+            # кнопка «маска» зовут её же). Путь к ней в Nodes 2.0 —
+            # extensionManager.command; app.commandStore не существует.
+            cmd_ret = await cdp.eval(
+                "(() => { const em = window.comfyAPI?.app?.app?.extensionManager;"
+                " const cmd = em && em.command;"
+                " if (!cmd || typeof cmd.execute !== 'function') return { ok: false };"
+                " cmd.execute('Comfy.MaskEditor.OpenMaskEditor');"
+                " return { ok: true }; })()"
             )
             await asyncio.sleep(2.0)
             editor_state = await cdp.eval(
-                "(() => { const d = document.querySelector('.mask-editor-dialog');"
+                "(() => { const d = document.querySelector('.maskEditor-dialog-root');"
                 " if (!d) return { opened: false };"
                 " return { opened: true, canvases: d.querySelectorAll('canvas').length,"
                 "   width: Math.round(d.getBoundingClientRect().width) }; })()"

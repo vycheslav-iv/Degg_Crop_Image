@@ -1,4 +1,4 @@
-# Память сессии — Degg Crop Image (2026-10-22)
+# Память сессии — Degg Crop Image (2026-10-23)
 
 > Покажи этот файл агенту, чтобы продолжить работу.
 > Всегда сверяйся с `AGENTS.md` и `SPECIFICATION.md`.
@@ -7,102 +7,119 @@
 
 ## 1. Что делали в этой сессии
 
-1. **Баг «на выходе 8×8»** (источник из файла и/или после покраски маски).
-   Причина: служебный виджет `image` (канал штатного Mask Editor) сериализовался
-   в промпт **по имени** (`inputs[widget.name] = value`), а у ноды есть вход-сокет
-   `image` (IMAGE) → туда попадала СТРОКА (`"example.png"`,
-   `"clipspace-painted-masked-… [input]"`). Сервер считал источник поданным, не
-   читал файл и отдавал пустую заглушку `multiplicity × multiplicity` = 8×8.
-2. Фикс: виджет `image` больше не сериализуется (`serialize: false` в опциях
-   `addWidget` **и** `widget.serialize = false`) + серверная страховка «не-тензор
-   в `image` = источник не подан, читаем `image_file`».
-3. Добавлена живая регрессия `tests/_probe_live_prompt_crop_image.py` (промпт
-   ровно от `app.graphToPrompt()` + сквозной прогон через очередь).
+1. **Маска по картинке, пришедшей ПРОВОДОМ.** Раньше Mask Editor в режиме
+   сокета открывался по файлу (или не открывался): `node.imgs` отдаёт текущий
+   источник, поэтому рисовать теперь можно по любой картинке.
+2. **Сброс покраски при смене рода источника** (файл ↔ провод): `sourceKind()`
+   + `noteSourceKind()`; первое наблюдение — усыновление БЕЗ сброса (иначе
+   маска из воркфлоу стиралась бы при открытии), отличие → `dropPaintedMask()`.
+3. **Разобраны 3 ложных провала живой пробы** (см. §3) — два были дефектами
+   самой пробы, один настоящий (ручной размер стирался при открытии воркфлоу).
+4. Документация (`SPECIFICATION.md` §9.4, `README.md`) приведена к фактам.
+5. **Покраска по картинке из кабеля не попадала в результат** (жалоба после
+   первого прогона: в превью ноды кисть есть, на выходе — исходник). Причина
+   в `crop_image.py`: при поданном сокете `painted_image` (RGB-слой Paint)
+   выбрасывался, из файла бралась только маска. Фикс: `painted_matches_source()`
+   (медиана разницы по сетке 48×48, допуск 0.08) — если основа файла совпадает
+   с картинкой из сокета, источник = файл редактора; иначе побеждает сокет.
+6. **Сохранённая маска не возвращалась в редактор** (жалоба 2026-10-23:
+   «рисую, сохраняю, всё работает; открываю редактор снова — ничего нет»).
+   Фронтенд находит слои маски/кисти только по имени файла из служебного
+   виджета `image` (`clipspace-painted-masked-<ts>.png` → `clipspace-mask-…`
+   в альфе и `clipspace-paint-…`), а нода держала там источник. Фикс:
+   `editorSourceRef()` + `paintedMatchesSource()` (пиксельное сравнение,
+   сетка 32×32, медиана ≤ 0.08, файл рисуется ПОВЕРХ источника из-за альфы).
+   RED-проба `tests/_probe_live_mask_restore.py`: было `ok:2 FAIL:4`, стало
+   `ok:11 FAIL:0`; три мутации краснят её.
 
 ## 2. Итоговое состояние кода
 
-- `crop_image.py:632` (в `crop()`, строка 603) `crop(...)` — перед `load_source_file`: `if image is not
-  None and not hasattr(image, "shape"): image = None` (страховка от строки в
-  входе из старых промптов/воркфлоу).
-- `web/js/crop_image.js:1547` `maskEditorWidget` (`addWidget('string','image',
-  …)`) — `serialize: false` в опциях **и** `maskEditorWidget.serialize = false`.
-  ⛔ Оба канала обязательны: фронтенд читает `i.options.serialize === false`,
-  AGENTS требует ещё и свойство. Значение маски живёт во входе `mask_file`,
-  поэтому из промпта ничего не теряется.
-- `web/js/crop_image.js:1603` `currentSourceRef()` / `syncMaskEditorSource()` —
-  виджет `image` держит ТЕКУЩИЙ источник (имя файла / пусто в режиме сокета),
-  иначе Mask Editor открывается со старой картинкой.
-- `crop_image.py:245` `input_image_files()`, `crop_image.py:266`
-  `load_source_file(name)` — файл из `input` (PIL+numpy), альфа → маска,
-  снимает аннотации фронтенда (`[input]`, `[output]`, `[temp]`).
-- `crop_image.py:130` `output_size()` — размер по МП и кратности (1 МП = 1024²).
-- `web/js/crop_image.js:21` `WIDGET_ORDER` — `image` последний, поэтому его
-  исключение из сериализации не сдвигает позиционные `widgets_values`.
-- `web/js/crop_image.js:1891` `setupNode()` — DOM-превью (`getMinHeight` в
-  опциях `addDOMWidget`, без позднего override).
-- `crop_image.py:221` `_mask_alpha()`, `crop_image.py:484` вход `mask_file` —
-  приоритет маски: `mask` → `mask_file` → альфа источника.
+- `web/js/crop_image.js`:
+  - `loadStateFromWidgets({ dropStale = true })` — `dropStaleManual()` зовётся
+    только когда картинка актуальна; `onConfigure` передаёт `dropStale: false`.
+    ⛔ Причина: на `onConfigure` `state.img` ещё ПРЕДЫДУЩАЯ картинка, и
+    сохранённый `output_size` (`930,1280`) вычищался как «несовпадающий».
+    Точную проверку делает `image.onload` по реальному источнику.
+  - `sourceKind()` / `noteSourceKind()` / `lastSourceKind` — рядом с
+    `dropPaintedMask()`; вызов в rAF внутри `onConnectionsChange` и в стартовом rAF.
+  - `image.onerror` — `state.img = null`, `node.imgs = []`, снятие `src`,
+    текст пустого состояния; один `retry` перезапроса файла.
+  - `node.imgs` — `Object.defineProperty` (get отдаёт `state.img`).
+- `crop_image.py` — `painted_matches_source(painted, source, tolerance=0.08)`
+  рядом с `_fill_color`; в `crop()` ветка `elif painted_image is not None and
+  painted_matches_source(...)`: одиночный кадр — замена целиком, батч —
+  `torch.cat([painted, image[1:]])` (редактор открывался по первому кадру).
+- `tests/_check_mask_file.py` — 4 сценария (кабель/файл + маска, покраска по
+  кабелю → красные пиксели есть, файл от другой картинки → красных 0).
+- `tests/_probe_live_dom_crop_image.py` — `ok: 131`, `FAIL: 0`.
+- `tests/_probe_live_wire_mask.py` — `ok: 19`, `FAIL: 0`.
+- `tests/_probe_live_mask_preview.py` — `ok: 12`, `FAIL: 0`.
+- `tests/_probe_live_mask_restore.py` — `ok: 11`, `FAIL: 0` (маска и кисть
+  возвращаются при повторном открытии; файл от другой картинки не подставляется).
+- `node tests/_smoke_crop_image.mjs` — 92/0; `node tests/_audit_crop_image.mjs`
+  — 187/0; `python tests/_test_crop_image.py` — 139/0;
+  `python _process/check.py Degg_Crop_Image` — провалов 0.
+- `web/js/crop_image.js`: `editorSourceRef()` / `paintedMatchesSource()` /
+  `sampleGrid()` рядом с `syncMaskEditorSource()`; `maskLayer.onload` зовёт
+  `layout()` + `syncMaskEditorSource()` (слой мог догрузиться позже источника).
 
 ## 3. Проблемы, которые встречались (и как решали)
 
-- **8×8 на выходе** — строка из служебного виджета в сокете `image`.
-  Доказательство: `tests/_probe_live_prompt_crop_image.py` печатал
-  `image_type='string'` и `image_value='example.png'` (2 провала). После фикса
-  ключа `image` в промпте НЕТ, сквозной прогон даёт 768×768.
-- **Старые промпты** (строка уже записана) лечатся только серверной страховкой:
-  на запущенном ComfyUI со старым Python проба с промптом старого вида всё ещё
-  печатает `(8, 8)` → нужен рестарт ComfyUI после правки `.py`.
-- **Детектор зеленел от собственного комментария** — в аудите
-  `/serialize:\s*false/` матчил строку `// serialize:false ОБЯЗАТЕЛЬНО…`.
-  Лечение: `/^\s*serialize:\s*false,/m` (только строка опции).
-- **Смоук/живая проба подхватывала чужой воркфлоу** — headless Chrome
-  восстанавливает последний граф, промпт падал на чужом `KSampler`. Лечение:
-  `app.graph.clear()` в setup пробы.
-- **`sync.py` копирует все `.py`** — временные `_tmp_*.py` удалены из проекта
-  и рабочей копии.
-- Остальные (прошлые сессии, актуально): маска = 1 − альфа у файла Mask Editor;
-  поздно подставленное «второе превью» убирается через `app.nodeOutputs`;
-  позиционное восстановление виджетов чинится `widgets_values_named`.
+- **«нет файла: node.imgs погашен»** — НЕ регрессия: в этой точке пробы провод
+  подключён, `previewFor` берёт картинку провода, `node.imgs` законно её держит.
+  Проба исправлена: отключить провод → плохой файл → `imgs == 0` → вернуть.
+- **«значения встали на свои виджеты»** — got `''` vs want `930,1280`:
+  `dropStaleManual()` в `loadStateFromWidgets()` сравнивал с ПРЕДЫДУЩЕЙ
+  картинкой. Лечение — параметр `dropStale` (см. §2).
+- **«кнопка Маска открывает редактор»** — проба звала несуществующий
+  `app.commandStore` и искала `.mask-editor-dialog`. Правильно:
+  `app.extensionManager.command.execute('Comfy.MaskEditor.OpenMaskEditor')`
+  и `.maskEditor-dialog-root` (замер: холстов 2 → 6, `[role=dialog]` 0 → 1).
+- ⛔ **`app.loadGraphData()` ВЫЗЫВАЕТ `onConnectionsChange`** — один раз на
+  входной слот, с уже восстановленными связями и `previous === null`. Прежнее
+  «вызовов нет» было артефактом замера (обёртка `LiteGraph.createNode` не видит
+  ноды внутри `loadGraphData`). Поэтому сброс на `previous === null` запрещён.
+- `upstreamNode(node)` в `nodeCreated` бросает `NullGraphError` → граф трогать
+  только в try/catch.
+- **«нарисовал по проводу, сохранил — на выходе нет кисти»**: файл редактора
+  несёт Paint в RGB, поэтому его нельзя выбрасывать при поданном сокете. Но и
+  брать его слепо нельзя (файл мог остаться от прошлой картинки) — только после
+  `painted_matches_source()`. Мутации: `return True` → краснеет проверка «файл
+  от другой картинки», `return False` → краснеет «покраска по кабелю».
 
 ## 4. Что важно не сломать при продолжении работы
 
-- ⛔ **Служебный виджет `image` не сериализуется** (оба канала). Вернуть
-  `serialize: true` — значит вернуть 8×8.
-- ⛔ **Серверная страховка в `crop()`** — без неё старые промпты снова дают 8×8.
-- ⛔ **Маска** — конвенция ComfyUI (1 = убрать, альфа файла = 1 − маска).
-- ⛔ **Мегапиксели затираются при смене картинки** (SPEC §8.1) — не менять без
-  решения пользователя; размер в UI и API считается по-разному (SPEC §8.5).
-- ⛔ Шесть видимых входов сервер не читает (`aspect_ratio`, `lock_ratio`,
-  `center_x/y`, `frame_w/h`) — состояние в `crop_rect`/`output_size` (SPEC §8.2).
-- ⛔ Батч: размер от первого кадра (SPEC §8.3).
-- ⛔ Не добавлять свои кнопки «Маска»/«Загрузить файл» в Nodes 2.0: загрузка —
-  иконка-папка в комбо, маска — штатные точки входа фронтенда.
-- `getMinHeight` вместо позднего `computeLayoutSize`; upstream по имени сокета;
-  `hideInPanel` для скрытых DOM-виджетов; никаких таймеров для layout.
-- Хук `.githooks/commit-msg`: названный в сообщении файл обязан быть в индексе,
-  а утверждение об успехе — иметь след приёмки.
+- Сброс маски — ТОЛЬКО на смене рода источника или файла; на каждой новой
+  картинке из провода маску не трогать; при открытии воркфлоу — не трогать.
+- `dropStaleManual()` в `loadStateFromWidgets()` обязан оставаться под флагом
+  `dropStale` (иначе снова стирается ручной размер из воркфлоу).
+- `node.imgs` — единственный канал «нода = картинка» для штатных точек входа;
+  гасить его можно только когда превью реально пропало.
+- Служебный виджет `image` НЕ сериализуется (`serialize: false` в опциях и в
+  свойстве) — иначе возвращается баг «на выходе 8×8».
+- В служебный виджет `image` кладётся файл редактора ТОЛЬКО после пиксельного
+  сравнения с текущей картинкой (`paintedMatchesSource`). Убрать сравнение =
+  редактор покажет картинку прошлой покраски (мутация `return true` краснит
+  3 проверки пробы).
+- Перед каждым живым прогоном — `python sync.py Degg_Crop_Image` (пробы читают
+  рабочую копию `D:\ComfyUI_windows_portable\...`).
 
 ## 5. Следующие шаги
 
-- **Перезапустить ComfyUI** и перепрогнать
-  `D:/ComfyUI_windows_portable/python_embeded/python.exe tests/_probe_live_prompt_crop_image.py`
-  — проверка «старый промпт со строкой в `image`» должна позеленеть.
-- Проверить в живом UI: файл-источник + маска → результат не 8×8.
-- `tests/_diag_workflow_links.py` (untracked) — разовая диагностика связей,
-  в репозиторий не коммитился.
-- `start-comfyui.bat` в `G:\ИИ web` — по аналогии с `stop-comfyui.bat`.
+- Закоммитить работу (в рабочей копии правки уже синхронизированы).
+- Пользователю: Hard Reload → воркфлоу «Test Crop» → нарисовать маску →
+  закрыть редактор → открыть снова: маска и кисть должны быть на месте
+  (проверено пробой `_probe_live_mask_restore.py` 11/0).
 
 ## 6. Связанные файлы
 
-- Код: `crop_image.py`, `web/js/crop_image.js`, `__init__.py`,
-  `locales/{ru,en}/nodeDefs.json`.
-- Документация: `SPECIFICATION.md` (§8 решения, §9.4 Mask Editor + регрессия
-  8×8), `README.md`.
-- Проверки: `tests/_test_crop_image.py` (110), `tests/_smoke_crop_image.mjs`,
-  `tests/_audit_crop_image.mjs` (179), `tests/_probe_live_prompt_crop_image.py`
-  (7, живая, промпт + очередь), `tests/_probe_live_dom_crop_image.py` (живая
-  DOM), `tests/_check_mask_file.py`, `tests/_check_file_mode.py`,
-  `tests/_check_image_size.py` (серверные).
-- Рабочая копия: `D:\ComfyUI_windows_portable\ComfyUI\custom_nodes\Degg_Crop_Image`
-  (синхронизирована; тесты не копируются).
-- Репро-воркфлоу: `D:\ComfyUI_windows_portable\ComfyUI\user\default\workflows\Test Crop.json`.
+- `web/js/crop_image.js` — вся логика превью/маски/источника.
+- `crop_image.py` — серверная часть (страховка «не-тензор», `load_source_file`,
+  маска из альфы: `mask` → `mask_file` → альфа; `painted_matches_source` —
+  «файл редактора = эта же картинка?»).
+- `tests/_probe_live_dom_crop_image.py`, `tests/_probe_live_wire_mask.py`,
+  `tests/_probe_live_mask_preview.py`, `tests/_probe_live_mask_restore.py` —
+  живые пробы.
+- `SPECIFICATION.md` §9.4 — контракт Mask Editor; `README.md` — для человека.
+- Фронтенд: `comfyui_frontend_package/static/assets/*.map` →
+  `src/extensions/core/maskeditor.ts`, `src/composables/maskeditor/useMaskEditor.ts`.

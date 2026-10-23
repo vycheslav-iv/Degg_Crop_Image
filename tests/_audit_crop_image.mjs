@@ -41,7 +41,30 @@ check(
   /RETURN_NAMES\s*=\s*\("image",\s*"mask",\s*"width",\s*"height"\)/.test(PY),
 );
 check("Python: DESCRIPTION есть", /DESCRIPTION\s*=\s*\(/.test(PY));
-check("Python: нет IS_CHANGED (кэш зависит от входа)", !/def\s+IS_CHANGED/.test(PY));
+check(
+  "Python: IS_CHANGED учитывает размер и mtime файлов источника",
+  // Перезалив файла под тем же именем меняет только mtime/размер: без штампа
+  // ComfyUI отдал бы результат из кэша.
+  /def\s+IS_CHANGED/.test(PY) &&
+    /st_mtime_ns/.test(PY) &&
+    /st_size/.test(PY) &&
+    /for name in \(image_file, mask_file\)/.test(PY) &&
+    // штамп обязан ВОЗВРАЩАТЬСЯ: собранные size/mtime без return ничего не дают
+    /return "\|"\.join\(parts\)/.test(PY),
+);
+check(
+  "Python: VALIDATE_INPUTS отсекает отсутствующий файл и путь вне input",
+  /def\s+VALIDATE_INPUTS/.test(PY) &&
+    /input_file_path\(text\) is None/.test(PY) &&
+    /Invalid file \(missing or outside the input folder\)/.test(PY),
+);
+check(
+  "Python: путь источника проверяется по realpath (обход через .. закрыт)",
+  /os\.path\.realpath/.test(PY) &&
+    /os\.path\.commonpath\(\[base, path\]\)/.test(PY) &&
+    // строка-префикс пропускала бы input2/ рядом с input/
+    !/path\.startswith\(base\)/.test(PY),
+);
 
 // ── Python: входы ───────────────────────────────────────────────────────────
 const required = PY.slice(PY.indexOf('"required": {'), PY.indexOf('"optional": {'));
@@ -173,7 +196,17 @@ check("JS: нет перезаписи this.computeSize", !/this\.computeSize\s*
 check("JS: нет setInterval/setTimeout-поллинга", !/setInterval\s*\(/.test(JS));
 check("JS: нет window.addEventListener", !/window\.addEventListener/.test(JS));
 check("JS: нет options.disabled (мёртвое поле)", !/options\.disabled/.test(JS));
-check("JS: нет canvas-рисования", !/createCanvas|getContext\s*\(/.test(JS));
+// Канвас запрещён как способ РИСОВАТЬ интерфейс (артефакты Nodes 2.0) —
+// разрешён только off-screen сэмплер пикселей `sampleGrid` (сравнение файла
+// редактора с источником: там нужны значения пикселей, а не картинка).
+const noCanvas = JS.replace(
+  JS.slice(JS.indexOf("function sampleGrid("), JS.indexOf("function syncMaskEditorSource()")),
+  "",
+);
+check(
+  "JS: нет canvas-рисования (канвас только off-screen сэмплер пикселей)",
+  noCanvas.indexOf("function sampleGrid(") < 0 && !/createCanvas|getContext\s*\(/.test(noCanvas),
+);
 const sizeFn = JS.slice(JS.indexOf("function desiredHeight()"), JS.indexOf("function refreshLayoutSize()"));
 check("JS: sizing без замеров DOM (desiredHeight)", !/scrollHeight|offsetHeight|clientHeight|getBoundingClientRect/.test(sizeFn));
 check("JS: нет plScale", !/plScale/.test(JS));
@@ -197,7 +230,10 @@ check(
   "JS: сброс к изображению = рамка 0,0,1,1 + пропорции и размер изображения",
   /function resetToImage\(\)[\s\S]{0,500}?state\.frac = \{ x: 0, y: 0, w: 1, h: 1 \}/.test(JS) &&
     /function resetToImage\(\)[\s\S]{0,700}?state\.ratioLock = state\.img \? state\.img\.w \/ state\.img\.h/.test(JS) &&
-    /function resetToImage\(\)[\s\S]{0,700}?snapSize\(\{ w: state\.img\.w, h: state\.img\.h \}/.test(JS),
+    // Размер = ТОЧНЫЕ пиксели источника: округление до кратности пересэмплировало
+    // бы нескобленную картинку (1001×751 → 1000×752).
+    /function resetToImage\(\)[\s\S]{0,700}?state\.manual = state\.img \? \{ w: state\.img\.w, h: state\.img\.h \} : null/.test(JS) &&
+    !/function resetToImage\(\)[\s\S]{0,700}?snapSize\(/.test(JS),
 );
 check(
   "JS: служебный виджет image следует за текущим источником (Mask Editor)",
@@ -205,11 +241,29 @@ check(
   // лежать текущий источник, а не результат прошлой покраски.
   /function currentSourceRef\(\)/.test(JS) &&
     /function syncMaskEditorSource\(\)/.test(JS) &&
-    /if \(isNewImage\) syncMaskEditorSource\(\)/.test(JS) &&
-    // результат покраски распознаётся по имени файла редактора
-    /clipspace-painted-masked-/.test(JS) &&
-    // в виджет image пишет только редактор
-    /if \(!\/clipspace-painted-masked-\/i\.test\(text\)\) return;/.test(JS),
+    /syncMaskEditorSource\(\)/.test(JS) &&
+    // результат покраски распознаётся по префиксу файла редактора: имя шаблона
+    // (было clipspace-painted-masked-) — деталь фронтенда и может смениться,
+    // поэтому жёсткого шаблона в коде быть не должно
+    /function isMaskEditorValue\(/.test(JS) &&
+    /\/\^clipspace-\/i\.test\(base\)/.test(JS) &&
+    /isMaskEditorValue\(text, currentSourceRef\(\)\)/.test(JS) &&
+    !/clipspace-painted-masked-\/i\.test/.test(JS),
+);
+check(
+  "JS: сохранённая маска восстанавливается в Mask Editor (файл редактора → виджет image)",
+  // Жалоба 2026-10-23: после сохранения маски повторное открытие редактора
+  // показывало пустую маску. Причина: в виджет image клали источник, а слои
+  // маски/кисти фронтенд находит только по файлу редактора. Теперь: файл
+  // редактора подставляется, если он нарисован по ТЕКУЩЕЙ картинке
+  // (сравнение пикселей), иначе — источник.
+  /function editorSourceRef\(\)/.test(JS) &&
+    /const next = editorSourceRef\(\)/.test(JS) &&
+    /function paintedMatchesSource\(ref\)/.test(JS) &&
+    /paintedMatchesSource\(text\)/.test(JS) &&
+    // пиксельное сравнение, а не доверие имени файла
+    /function sampleGrid\(el, n, under\)/.test(JS) &&
+    /sampleGrid\(maskLayer, N, image\)/.test(JS),
 );
 check(
   "JS: «Сбросить» и новая картинка ведут в одну операцию (resetToImage)",
@@ -410,8 +464,24 @@ check(
 );
 check(
   "JS: итоговый размер результата (ручной или по мегапикселям)",
-  /function resultSize\(\)[\s\S]{0,400}?snapSize\(state\.manual/.test(JS) &&
-    /function resultSize\(\)[\s\S]{0,400}?computeOutputSize\(cropPx\(\)\.w, cropPx\(\)\.h/.test(JS),
+  // Ручной размер берётся как есть (паритет с Python): переокругление ломало
+  // пиксельную идентичность после «Сбросить»/загрузки картинки.
+  /function resultSize\(\)[\s\S]{0,400}?state\.manual[\s\S]{0,200}?Math\.max\(1, pyRound/.test(JS) &&
+    // округление только паритетное: Math.round дал бы 601 на 600.5 при 600 в Python
+    !/function resultSize\(\)[\s\S]{0,400}?Math\.round/.test(JS) &&
+    !/function resultSize\(\)[\s\S]{0,400}?snapSize\(state\.manual/.test(JS) &&
+    /function resultSize\(\)[\s\S]{0,600}?computeOutputSize\(cropPx\(\)\.w, cropPx\(\)\.h/.test(JS),
+);
+check(
+  "JS: outputSizeFor не переокругляет ручной размер (identity-контракт)",
+  /export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,600}?Math\.max\(1, pyRound\(Number\(manual\.w\)\)\)/.test(JS) &&
+    !/export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,600}?Math\.round/.test(JS) &&
+    !/export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,600}?snapSize\(manual/.test(JS),
+);
+check(
+  "Python: ручной размер результата — точный (без округления до кратности)",
+  /if manual is not None:[\s\S]{0,200}?py_round\(float\(manual\[0\]\)\)/.test(PY) &&
+    !/if manual is not None:[\s\S]{0,200}?manual\[0\] \/ step/.test(PY),
 );
 check(
   "JS: плашка показывает ИТОГОВЫЙ размер (а не размер кадра)",
@@ -461,7 +531,8 @@ check(
 check(
   "JS: свободный drag подстраивает ручной размер (пропорции результата следуют за кадром)",
   /function moveOrResizeCrop\(frac\)[\s\S]{0,600}?fracRatio\(frac, state\.img\.w, state\.img\.h\)/.test(JS) &&
-    /state\.manual = \{ w: state\.manual\.w, h: state\.manual\.w \/ ratio \}/.test(JS),
+    // высота — целое: в воркфлоу не должно уезжать 600.5
+    /function moveOrResizeCrop\(frac\)[\s\S]{0,600}?Math\.max\(1, pyRound\(state\.manual\.w \/ ratio\)\)/.test(JS),
 );
 check(
   "JS: сверка устаревшего ручного размера — до применения состояния, а не в отрисовке",
@@ -510,6 +581,21 @@ check(
     /paintedMaskUrl/.test(JS) && /degg-crop__masklayer/.test(JS),
 );
 check(
+  "JS: node.imgs гаснет, когда превью пропало (нет источника / ошибка загрузки)",
+  // Иначе штатный Mask Editor открывает исчезнувшую картинку, а нода остаётся
+  // «картинкой» без превью.
+  /if \(!url\) \{[\s\S]{0,200}?node\.imgs = \[\];/.test(JS) &&
+    /image\.onerror = \(\) => \{[\s\S]{0,200}?node\.imgs = \[\];/.test(JS),
+);
+check(
+  "JS: покраска сбрасывается при выборе ДРУГОГО файла (не при той же записи)",
+  // Paint относится к конкретной картинке: старый файл редактора молча
+  // перекрыл бы новую (сервер берёт из него и RGB, и маску).
+  /function dropPaintedMask\(\)/.test(JS) &&
+    /onWidgetChange\(widgetByName\(node, 'image_file'\), \(value\) => \{[\s\S]{0,400}?if \(changed\) dropPaintedMask\(\);/.test(JS) &&
+    /if \(changed\) dropPaintedMask\(\)/.test(JS),
+);
+check(
   "JS: своих кнопок «Маска» и «Загрузить файл» в Nodes 2.0 нет",
   // кнопка «Маска» не делается — работают штатные точки входа фронтенда
   !/addWidget\(\s*'button',\s*'mask_editor'/.test(JS) &&
@@ -523,6 +609,14 @@ check(
   /"mask_file":\s*\(\s*"STRING"/.test(PY) &&
     /"hidden": True/.test(PY) &&
     /mask = painted_mask/.test(PY),
+);
+check(
+  "Python: файл Mask Editor отдаёт И картинку (Paint-слой), И маску, как LoadImage",
+  /painted_image, painted_mask = load_source_file\(mask_file\)/.test(PY) &&
+    /if painted_image is not None:\s*\n\s*image = painted_image/.test(PY) &&
+    /if painted_mask is not None:\s*\n\s*mask = painted_mask/.test(PY) &&
+    // только маска брать нельзя: покраска цветной кистью терялась
+    !/_, painted_mask = load_source_file\(mask_file\)/.test(PY),
 );
 check(
   "JS: кнопка загрузки файла — нативный виджет с загрузкой на сервер",

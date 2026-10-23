@@ -287,11 +287,17 @@ export function snapSize(manual, multiplicity) {
 
 /**
  * Итоговый размер результата: ручной (если задан) или по мегапикселям.
- * Ручной размер — это ровно то, что ввёл пользователь (с кратностью).
+ * Ручной размер — это ТОЧНЫЙ размер результата (его округляет только ввод в
+ * поля W/H, `setResultSize`): переокругление здесь пересэмплировало бы
+ * источник, который не обрезали (1001×751 → 1000×752). Паритет с `output_size`
+ * в Python, где ручной размер тоже берётся как есть.
  */
 export function outputSizeFor(rectW, rectH, megapixels, multiplicity, manual) {
   if (manual && Number(manual.w) > 0 && Number(manual.h) > 0) {
-    return snapSize(manual, multiplicity);
+    return {
+      w: Math.max(1, pyRound(Number(manual.w))),
+      h: Math.max(1, pyRound(Number(manual.h))),
+    };
   }
   return computeOutputSize(rectW, rectH, megapixels, multiplicity);
 }
@@ -355,6 +361,25 @@ export function ratiosMatch(frac, manual, imgW, imgH, tolerance = RATIO_TOLERANC
 /** Shift-constrained move: lock to the dominant axis. */
 export function axisDelta(dx, dy) {
   return Math.abs(dx) >= Math.abs(dy) ? { dx, dy: 0 } : { dx: 0, dy };
+}
+
+/**
+ * Значение виджета `image` записал штатный Mask Editor?
+ *
+ * Редактор пишет результат в виджет `image` файлом `clipspace-…` с аннотацией
+ * `[input]`. Имя шаблона — деталь фронтенда (было `clipspace-painted-masked-`,
+ * может смениться), поэтому опознаём по префиксу `clipspace-`, а не по
+ * точному шаблону: иначе покраска молча перестанет работать после обновления
+ * ComfyUI. Наша собственная запись текущего источника (`currentSource`) маской
+ * не считается.
+ */
+export function isMaskEditorValue(value, currentSource = '') {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return false;
+  const name = text.replace(/\s*\[(input|output|temp)\]\s*$/i, '');
+  const base = name.split('/').pop() || name;
+  if (!/^clipspace-/i.test(base)) return false;
+  return name !== String(currentSource ?? '');
 }
 
 /** Resize a source-space frame from a drag delta. */
@@ -655,6 +680,20 @@ function createEditor(node, widget) {
   // Слой с маской, нарисованной в штатном Mask Editor: прозрачность файла =
   // инвертированная маска, поэтому выбитые маской места видны как «дырки».
   const maskLayer = make('img', 'degg-crop__masklayer', stage);
+  // Файл покраски догружается асинхронно: пока его нет, источник видим, а
+  // после загрузки слой заменяет источник (см. layout()). Заодно решаем,
+  // можно ли отдать файл штатному Mask Editor как источник (editorSourceRef):
+  // слои маски и кисти он находит только по этому файлу, поэтому сравнивать
+  // его с текущей картинкой можно лишь когда он загружен.
+  maskLayer.onload = () => {
+    layout();
+    syncMaskEditorSource();
+  };
+  maskLayer.onerror = () => {
+    maskLayer.style.display = 'none';
+    maskLayer.dataset.src = '';
+    image.style.visibility = '';
+  };
   image.draggable = false;
   image.alt = '';
   const dimEl = make('div', 'degg-crop__dim', stage);
@@ -786,7 +825,12 @@ function createEditor(node, widget) {
 
   /** Итоговый размер результата: ручной размер важнее мегапикселей. */
   function resultSize() {
-    if (state.manual) return snapSize(state.manual, multiplicity());
+    if (state.manual) {
+      return {
+        w: Math.max(1, pyRound(Number(state.manual.w))),
+        h: Math.max(1, pyRound(Number(state.manual.h))),
+      };
+    }
     return computeOutputSize(cropPx().w, cropPx().h, megapixels(), multiplicity());
   }
 
@@ -863,7 +907,9 @@ function createEditor(node, widget) {
       });
       if (cropWidget.value !== value) cropWidget.value = value;
       if (outputSizeWidget) {
-        const manual = state.manual ? `${state.manual.w},${state.manual.h}` : '';
+        const manual = state.manual
+          ? `${pyRound(state.manual.w)},${pyRound(state.manual.h)}`
+          : '';
         if (outputSizeWidget.value !== manual) outputSizeWidget.value = manual;
       }
     };
@@ -906,7 +952,10 @@ function createEditor(node, widget) {
   function moveOrResizeCrop(frac) {
     if (state.manual) {
       const ratio = fracRatio(frac, state.img.w, state.img.h);
-      state.manual = { w: state.manual.w, h: state.manual.w / ratio };
+      state.manual = {
+        w: pyRound(state.manual.w),
+        h: Math.max(1, pyRound(state.manual.w / ratio)),
+      };
     }
     state.frac = clampFrac(frac);
     commit();
@@ -953,12 +1002,10 @@ function createEditor(node, widget) {
    * одна операция на оба случая. */
   function resetToImage() {
     state.frac = { x: 0, y: 0, w: 1, h: 1 };
-    // Размер результата = размер изображения. Задаём его ТОЧНО (ручной размер),
-    // а не через мегапиксели: их шаг 0.1 дал бы «2728 × 1536» вместо
-    // «2720 × 1536». Мегапиксели покажут эквивалент (syncViews).
-    state.manual = state.img
-      ? snapSize({ w: state.img.w, h: state.img.h }, multiplicity())
-      : null;
+    // Размер результата = размер изображения, ТОЧНО в пикселях источника:
+    // никакого округления до кратности (1001×751 → 1000×752 пересэмплировал бы
+    // нескобленную картинку). Мегапиксели покажут эквивалент (syncViews).
+    state.manual = state.img ? { w: state.img.w, h: state.img.h } : null;
     state.ratioLock = state.img ? state.img.w / state.img.h : null;
     programmatic(aspectWidget, 'free');
     programmatic(lockWidget, true);
@@ -975,10 +1022,14 @@ function createEditor(node, widget) {
   }
 
   /** Загрузка состояния из виджетов (открытие воркфлоу). */
-  function loadStateFromWidgets() {
+  function loadStateFromWidgets({ dropStale = true } = {}) {
     if (cropWidget) state.frac = parseRectFrac(cropWidget.value);
     state.manual = parseManualSize(outputSizeWidget?.value);
-    dropStaleManual();
+    // dropStale: при открытии воркфлоу state.img — ещё ПРЕДЫДУЩАЯ картинка
+    // (новая не загружена), и сравнение с ней стирало сохранённый ручной
+    // размер. В onConfigure проверку делает image.onload по реальному
+    // изображению источника; при чтении виджетов вручную картинка актуальна.
+    if (dropStale) dropStaleManual();
   }
 
   // ── ОТРИСОВКА (чистая: только читает состояние) ─────────────────────────
@@ -1054,8 +1105,11 @@ function createEditor(node, widget) {
 
     setRect(image, state.offX, state.offY, state.img.w * scale, state.img.h * scale);
 
-    // Нарисованная маска (штатный Mask Editor) показывается поверх картинки:
-    // файл имеет ту же геометрию, его альфа = инвертированная маска.
+    // Файл штатного Mask Editor заменяет источник, а не лежит поверх него:
+    // его RGB = картинка + слой Paint (цветная кисть), альфа = инвертированная
+    // маска. Поэтому показываем ИМЕННО его, а источник скрываем — иначе
+    // под прозрачными (выбитыми маской) пикселями просвечивал бы исходник,
+    // и ни покраска, ни маска не были бы видны (как у стандартной ноды).
     const maskUrl = paintedMaskUrl(node);
     if (maskUrl) {
       if (maskLayer.dataset.src !== maskUrl) {
@@ -1063,10 +1117,15 @@ function createEditor(node, widget) {
         maskLayer.src = maskUrl;
       }
       setRect(maskLayer, state.offX, state.offY, state.img.w * scale, state.img.h * scale);
-      maskLayer.style.display = '';
+      // ⛔ Именно 'block': в CSS у слоя display:none, а пустая строка его не
+      // отменяет (inline-значения нет → снова правило таблицы стилей).
+      maskLayer.style.display = 'block';
+      const ready = !!maskLayer.complete && maskLayer.naturalWidth > 0;
+      image.style.visibility = ready ? 'hidden' : '';
     } else {
       maskLayer.style.display = 'none';
       maskLayer.dataset.src = '';
+      image.style.visibility = '';
     }
 
     const fx = state.offX + r.x * scale;
@@ -1230,6 +1289,9 @@ function createEditor(node, widget) {
 
     if (!url) {
       state.img = null;
+      // Нода перестаёт быть «картинкой»: иначе штатный Mask Editor открывает
+      // исчезнувшую картинку (её берут из node.imgs).
+      node.imgs = [];
       image.removeAttribute('src');
       empty.textContent = labels().empty;
       empty.style.display = '';
@@ -1251,10 +1313,12 @@ function createEditor(node, widget) {
       const isNewImage = state.imageKey !== state.key;
       state.imageKey = state.key;
       state.img = { w, h };
-      // Сменилась картинка — служебный виджет image должен указывать на
-      // ТЕКУЩИЙ источник, иначе штатный Mask Editor откроется со старой
-      // картинкой (там лежит результат прошлой покраски).
-      if (isNewImage) syncMaskEditorSource();
+      // Служебный виджет image и захваченный результат редактора должны
+      // указывать на ТЕКУЩИЙ источник — на каждой загрузке, а не только при
+      // смене картинки: после сохранения маски в node.images лежит покрашенный
+      // файл, и редактор открывался по нему даже когда источник уже другой
+      // (например, картинка пришла проводом).
+      syncMaskEditorSource();
       // Восстановление воркфлоу: рамка пришла из crop_rect — её не трогаем.
       // Связи в воркфлоу восстанавливаются ПОСЛЕ onConfigure, поэтому флаг живёт
       // в состоянии, а не в аргументе загрузки.
@@ -1287,6 +1351,8 @@ function createEditor(node, widget) {
     };
     image.onerror = () => {
       state.img = null;
+      // Файл не открылся — превью нет, значит и node.imgs держать нельзя.
+      node.imgs = [];
       image.removeAttribute('src');
       empty.textContent = labels().empty;
       empty.style.display = '';
@@ -1552,7 +1618,7 @@ function createEditor(node, widget) {
       const text = typeof value === 'string' ? value : '';
       // В виджет image пишет ТОЛЬКО редактор (результат покраски). Иначе это
       // наша собственная запись текущего источника — её не считать маской.
-      if (!/clipspace-painted-masked-/i.test(text)) return;
+      if (!isMaskEditorValue(text, currentSourceRef())) return;
       const target = widgetByName(node, 'mask_file');
       if (!target) return;
       if (target.value === text) return;
@@ -1560,19 +1626,11 @@ function createEditor(node, widget) {
       target.callback?.(text, app.canvas, node);
       layout();
       // Редактор после сохранения подставляет ноде «выходную картинку»
-      // (replaceNodeOutputImages) — под нодой появляется второе превью.
-      // Наш callback вызывается ДО подстановки, поэтому убираем её следующим
-      // тиком и возвращаем node.imgs (редактор его сбрасывает — без него
-      // нода перестаёт быть «картинкой» и штатные точки входа исчезают).
-      setTimeout(() => {
-        try {
-          delete app.nodeOutputs[locatorIdFor(node)];
-        } catch {
-          /* ignore: the output map may not be ready */
-        }
-        node.imgs = [image];
-        node.setDirtyCanvas?.(true, true);
-      }, 0);
+      // (node.images + replaceNodeOutputImages) — под нодой появляется второе
+      // превью, и следующий запуск редактора открывался уже по ней.
+      // Наш callback вызывается ДО подстановки, поэтому чистим её следующим
+      // тиком и возвращаем текущий источник.
+      setTimeout(syncMaskEditorSource, 0);
     },
     {
       // ⛔ serialize:false ОБЯЗАТЕЛЬНО: виджеты уходят в промпт ПО ИМЕНИ
@@ -1606,12 +1664,140 @@ function createEditor(node, widget) {
     return typeof value === 'string' ? value : '';
   }
 
+  /**
+   * Источник для служебного виджета `image`.
+   *
+   * По умолчанию — текущая картинка (`currentSourceRef`). Но если в
+   * `mask_file` лежит файл штатного редактора, нарисованный по ЭТОЙ ЖЕ
+   * картинке, отдаём его: фронтенд (`useMaskEditorLoader`) по имени файла
+   * сам находит слои `clipspace-mask-<ts>.png` (маска в альфе) и
+   * `clipspace-paint-<ts>.png` (кисть) и восстанавливает их при повторном
+   * открытии — как у стандартной ноды. Иначе маска «терялась»: редактор
+   * открывал голый источник, у которого альфы нет.
+   *
+   * Файл от ДРУГОЙ картинки отдавать нельзя — редактор показал бы старую
+   * картинку, поэтому сначала сравниваем пиксели (`paintedMatchesSource`).
+   */
+  function editorSourceRef() {
+    const raw = widgetByName(node, 'mask_file')?.value;
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (text && isMaskEditorValue(text, '') && paintedMatchesSource(text)) {
+      return text;
+    }
+    return currentSourceRef();
+  }
+
+  /**
+   * Совпадает ли файл редактора с текущим источником.
+   *
+   * Та же проверка, что на сервере (`painted_matches_source`): сетка 32×32,
+   * максимум разницы по каналам, МЕДИАНА ≤ 0.08. Медиана, а не среднее:
+   * штрих кисти и выбитая маской область — меньшая часть кадра, а сравнение
+   * должно говорить о картинке под ними.
+   *
+   * Файл редактора рисуем ПОВЕРХ источника: у него альфа = 1 − маска, и в
+   * выбитых местах прозрачные пиксели читались бы как чёрные (canvas
+   * премультиплицирует альфу) — подложка возвращает там исходную картинку.
+   * Оба элемента уже загружены превью, поэтому чтение синхронное. Любая
+   * неопределённость (не догрузились, другой размер, canvas taint) — false.
+   */
+  function paintedMatchesSource(ref) {
+    try {
+      const url = paintedMaskUrl(node);
+      // Слой ещё не загружен именно для ЭТОГО значения mask_file — сравнивать
+      // нечего (после сохранения маски layout() выставит src, onload позовёт
+      // syncMaskEditorSource повторно).
+      if (!url || maskLayer.dataset.src !== url) return false;
+      if (!image.complete || !image.naturalWidth || !image.naturalHeight) return false;
+      if (!maskLayer.complete || !maskLayer.naturalWidth) return false;
+      if (image.naturalWidth !== maskLayer.naturalWidth) return false;
+      if (image.naturalHeight !== maskLayer.naturalHeight) return false;
+      const N = 32;
+      const source = sampleGrid(image, N);
+      const painted = sampleGrid(maskLayer, N, image);
+      if (!source || !painted) return false;
+      const diffs = [];
+      for (let i = 0; i < source.length; i += 3) {
+        diffs.push(
+          Math.max(
+            Math.abs(source[i] - painted[i]),
+            Math.abs(source[i + 1] - painted[i + 1]),
+            Math.abs(source[i + 2] - painted[i + 2]),
+          ) / 255,
+        );
+      }
+      diffs.sort((a, b) => a - b);
+      const mid = diffs.length >> 1;
+      const median = diffs.length % 2 ? diffs[mid] : (diffs[mid - 1] + diffs[mid]) / 2;
+      return median <= 0.08;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Сетка N×N RGB-отсчётов элемента (с необязательной подложкой под альфу). */
+  function sampleGrid(el, n, under) {
+    const canvas = document.createElement('canvas');
+    canvas.width = n;
+    canvas.height = n;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    if (under) ctx.drawImage(under, 0, 0, n, n);
+    ctx.drawImage(el, 0, 0, n, n);
+    const data = ctx.getImageData(0, 0, n, n).data;
+    const out = new Array(n * n * 3);
+    for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
+      out[j] = data[i];
+      out[j + 1] = data[i + 1];
+      out[j + 2] = data[i + 2];
+    }
+    return out;
+  }
+
   function syncMaskEditorSource() {
-    if (!maskEditorWidget) return;
-    const next = currentSourceRef();
-    if (maskEditorWidget.value === next) return;
-    // Без callback: значение ставим мы, а не редактор.
-    maskEditorWidget.value = next;
+    if (maskEditorWidget) {
+      const next = editorSourceRef();
+      // Без callback: значение ставим мы, а не редактор.
+      if (maskEditorWidget.value !== next) maskEditorWidget.value = next;
+    }
+    // ⛔ Фронтенд (useMaskEditorLoader.getNodeImageUrl) берёт картинку для
+    // редактора в порядке: `node.images` → `app.nodeOutputs[id]` → `node.imgs`.
+    // После сохранения маски первые два канала указывают на ПОКРАШЕННЫЙ файл
+    // (replaceNodeOutputImages), поэтому редактор открывался по нему — маску
+    // можно было рисовать только по старой покраске, а не по текущей картинке
+    // (в том числе по картинке из провода). Гасим оба канала.
+    try {
+      node.images = undefined;
+    } catch {
+      /* ignore: the field may be read-only on an old frontend */
+    }
+    try {
+      delete app.nodeOutputs[locatorIdFor(node)];
+    } catch {
+      /* ignore: the output map may not be ready */
+    }
+    node.setDirtyCanvas?.(true, true);
+  }
+
+  // ⛔ `node.imgs` — третий канал, по которому фронтенд берёт картинку для
+  // Mask Editor (после `node.images` и `app.nodeOutputs`), и он же — признак
+  // «нода-картинка», без которого исчезают штатные точки входа редактора.
+  // После сохранения маски фронтенд выставляет его САМ
+  // (`replaceNodeOutputImages` → покрашенный файл), причём асинхронно — наш
+  // сброс следующим тиком уже был поздно. Поэтому канал превращён в
+  // производный: источник — всегда текущее превью, а запись фронтенда
+  // игнорируется.
+  try {
+    Object.defineProperty(node, 'imgs', {
+      configurable: true,
+      enumerable: false,
+      get: () => (state.img ? [image] : []),
+      set: () => {
+        /* запись фронтенда (результат покраски) источником не является */
+      },
+    });
+  } catch (error) {
+    console.warn('[DeggCropImage] node.imgs не переопределён:', error);
   }
 
   const uploadButton = node.addWidget(
@@ -1752,9 +1938,52 @@ function createEditor(node, widget) {
   });
 
   // Смена выбранного файла (режим «без сокета») — перезагружаем превью.
-  onWidgetChange(widgetByName(node, 'image_file'), () => {
+  // Покраска Mask Editor относится к КОНКРЕТНОЙ картинке (её файл — это старый
+  // кадр вместе со слоем Paint), поэтому при выборе другого файла маска
+  // сбрасывается: иначе она молча перекрыла бы новую картинку.
+  function dropPaintedMask() {
+    const target = widgetByName(node, 'mask_file');
+    if (!target || !target.value) return false;
+    target.value = '';
+    target.callback?.('', app.canvas, node);
+    return true;
+  }
+
+  let lastImageFile = widgetByName(node, 'image_file')?.value ?? '';
+  onWidgetChange(widgetByName(node, 'image_file'), (value) => {
+    const next = typeof value === 'string' ? value : '';
+    const changed = next !== lastImageFile;
+    lastImageFile = next;
+    if (changed) dropPaintedMask();
+    syncMaskEditorSource();
     loadSource({ force: true });
   });
+
+  // РОД источника (файл ↔ провод) — не то же самое, что «другая картинка».
+  // Покраска нарисована по конкретному кадру, поэтому при смене рода она
+  // сбрасывается: иначе превью молча показывало старый файл, а сервер
+  // применял старую маску к картинке из провода. Внутри одного рода маска
+  // живёт (новый файл в комбо сбрасывает её отдельным правилом выше).
+  // `null` = род ещё не наблюдали: в nodeCreated у ноды нет графа, и
+  // getInputNode бросает NullGraphError. Загрузка воркфлоу приходит сюда один
+  // раз с уже восстановленными связями и предыдущим `null`, поэтому маска из
+  // файла не сбрасывается, а отметка рода сразу верна (замер: 2026-10-23).
+  let lastSourceKind = null;
+  function sourceKind() {
+    try {
+      return upstreamNode(node) ? 'wire' : 'file';
+    } catch {
+      return null;
+    }
+  }
+  function noteSourceKind() {
+    const kind = sourceKind();
+    if (!kind) return;
+    const previous = lastSourceKind;
+    lastSourceKind = kind;
+    if (previous === null || previous === kind) return;
+    dropPaintedMask();
+  }
 
   // Изменение «косметики» и параметров выхода перерисовывает сцену сразу:
   // без этого затемнение и плашка отстают до следующего resize/drag.
@@ -1780,6 +2009,7 @@ function createEditor(node, widget) {
     const isInput = type === (window.LiteGraph?.INPUT ?? 1);
     if (isInput && Number(slot) === 0) {
       requestAnimationFrame(() => {
+        noteSourceKind();
         watchSource();
         loadSource({ force: true });
       });
@@ -1834,7 +2064,7 @@ function createEditor(node, widget) {
     restoreWidgetValuesByName(info);
     sanitizeWidgetValues();
     state.restoring = true;
-    loadStateFromWidgets();
+    loadStateFromWidgets({ dropStale: false });
     requestAnimationFrame(() => {
       watchSource();
       loadSource({ force: true });

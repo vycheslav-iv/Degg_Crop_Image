@@ -95,6 +95,87 @@ def alpha_columns(path: Path) -> tuple[int, int]:
     return int(sum(left) / max(1, len(left))), int(sum(right) / max(1, len(right)))
 
 
+# Сценарий 3: покраска кистью по картинке из КАБЕЛЯ (жалоба 2026-10-23).
+# Файл редактора = исходная картинка + слой Paint; маска пустая (альфа 255).
+PAINT_FILE = "degg-paint-wire-check.png"
+FOREIGN_PAINT = "degg-paint-foreign-check.png"
+
+PROMPT_PAINT = {
+    "1": {"class_type": "LoadImage", "inputs": {"image": SOURCE}},
+    "2": {
+        "class_type": "DeggCropImage",
+        "inputs": {
+            "image": ["1", 0],
+            "mask_file": PAINT_FILE,
+            "megapixels": 2.0,
+            "multiplicity": 8,
+            "resample": "lanczos",
+            "fill": "transparent",
+            "dim_outside": 50,
+        },
+    },
+    "3": {"class_type": "PreviewImage", "inputs": {"images": ["2", 0]}},
+}
+
+# Сценарий 4: тот же кабель, но файл покраски — от ДРУГОЙ картинки.
+PROMPT_STALE = {
+    "1": {"class_type": "LoadImage", "inputs": {"image": SOURCE}},
+    "2": {
+        "class_type": "DeggCropImage",
+        "inputs": {
+            "image": ["1", 0],
+            "mask_file": FOREIGN_PAINT,
+            "megapixels": 2.0,
+            "multiplicity": 8,
+            "resample": "lanczos",
+            "fill": "transparent",
+            "dim_outside": 50,
+        },
+    },
+    "3": {"class_type": "PreviewImage", "inputs": {"images": ["2", 0]}},
+}
+
+
+def make_paint_file(path: Path, base: Path | None) -> None:
+    """PNG: картинка (или зелёный фон) + красный квадрат по центру.
+
+    Ровно так выглядит файл штатного Mask Editor: RGB = картинка + Paint-слой,
+    альфа = 255 везде (маску не рисовали).
+    """
+    from PIL import Image
+
+    if base is not None:
+        with Image.open(base) as handle:
+            canvas = handle.convert("RGBA")
+    else:
+        canvas = Image.new("RGBA", (64, 64), (0, 200, 60, 255))
+    width, height = canvas.size
+    side = max(8, min(width, height) // 5)
+    x0 = (width - side) // 2
+    y0 = (height - side) // 2
+    for y in range(y0, y0 + side):
+        for x in range(x0, x0 + side):
+            canvas.putpixel((x, y), (255, 0, 0, 255))
+    canvas.save(path)
+
+
+def red_pixels(path: Path) -> int:
+    """Сколько пикселей результата — ярко-красные (след кисти)."""
+    from PIL import Image
+
+    with Image.open(path) as handle:
+        rgb = handle.convert("RGB")
+        width, height = rgb.size
+        pixels = rgb.load()
+        count = 0
+        for y in range(0, height, max(1, height // 200)):
+            for x in range(0, width, max(1, width // 200)):
+                r, g, b = pixels[x, y]
+                if r > 200 and g < 80 and b < 80:
+                    count += 1
+        return count
+
+
 def run_prompt(prompt: dict) -> Path | None:
     """Ставит промпт в очередь и возвращает путь к файлу результата."""
     data = json.dumps({"prompt": prompt}).encode("utf-8")
@@ -160,6 +241,26 @@ def main() -> int:
             if right < 200:
                 failures.append(f"{label}: видимая половина убрана (альфа {right})")
 
+        # Сценарии 3-4: покраска кистью по картинке из кабеля.
+        make_paint_file(INPUT_DIR / PAINT_FILE, INPUT_DIR / SOURCE)
+        make_paint_file(INPUT_DIR / FOREIGN_PAINT, None)
+        for label, prompt, want_red in (
+            ("покраска по картинке из КАБЕЛЯ → Paint в результате", PROMPT_PAINT, True),
+            ("файл покраски от ДРУГОЙ картинки → кабель главнее", PROMPT_STALE, False),
+        ):
+            print("")
+            print("— сценарий: " + label)
+            path = run_prompt(prompt)
+            if path is None:
+                failures.append(f"{label}: результат не получен")
+                continue
+            red = red_pixels(path)
+            print(f"результат: {path.name} — красных пикселей {red}")
+            if want_red and red == 0:
+                failures.append(f"{label}: покраска потеряна (красных пикселей 0)")
+            if not want_red and red > 0:
+                failures.append(f"{label}: подставлена чужая покраска (красных {red})")
+
         if failures:
             for item in failures:
                 print("FAIL:", item)
@@ -167,10 +268,11 @@ def main() -> int:
         print("\nOK: маска из файла работает и с кабелем, и с файлом-источником")
         return 0
     finally:
-        try:
-            (INPUT_DIR / MASK_FILE).unlink()
-        except Exception:
-            pass
+        for name in (MASK_FILE, PAINT_FILE, FOREIGN_PAINT):
+            try:
+                (INPUT_DIR / name).unlink()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

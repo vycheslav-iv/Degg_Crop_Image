@@ -77,6 +77,7 @@ vm.runInContext(src + "\nglobalThis.__RATIOS = RATIO_VALUES;\n", ctx, { filename
 const { pyRound, computeOutputSize, parseRectFrac, clampFrac, resizeFrame } = ctx;
 const { centerFrameFrac, fitFrameFrac, frameCenterOffset, moveFrameToOffset, axisDelta } = ctx;
 const { snapSize, outputSizeFor, frameWithRatio, parseManualSize, fracRatio, ratiosMatch } = ctx;
+const { isMaskEditorValue } = ctx;
 
 // ── 1. pyRound = Python round() (banker's) ──────────────────────────────────
 check("pyRound(0.5) == 0", pyRound(0.5) === 0, pyRound(0.5));
@@ -301,6 +302,14 @@ check(
   JSON.stringify(outputSizeFor(1, 1, 2.0, 8, { w: 1000, h: 1000 })),
 );
 check(
+  "размер: ручной размер не переокругляется (точный, как в JS-редакторе)",
+  (() => {
+    const o = outputSizeFor(1, 1, 2.0, 8, { w: 1001, h: 751 });
+    return near1(o.w, 1001) && near1(o.h, 751);
+  })(),
+  JSON.stringify(outputSizeFor(1, 1, 2.0, 8, { w: 1001, h: 751 })),
+);
+check(
   "размер: пропорции 16:9 и 2 МП дают 1928 × 1088",
   (() => {
     const o = outputSizeFor(16 / 9, 1, 2.0, 8, null);
@@ -365,6 +374,50 @@ check(
 check(
   "сверка пропорций: без ручного размера — всегда да",
   ratiosMatch({ w: 0.1, h: 0.9 }, null, 2720, 1536) === true,
+);
+
+// ── 10. Ручной размер: паритет округления с Python (round = banker's) ─────
+// Python читает output_size как int(round(float(x))): 600.5 -> 600. Math.round
+// дал бы 601 — превью размера разошлось бы с реальным результатом.
+check(
+  "ручной размер: 600.5 округляется как Python (600, не 601)",
+  (() => {
+    const o = outputSizeFor(1, 1, 2.0, 8, { w: 800, h: 600.5 });
+    return o.w === 800 && o.h === 600;
+  })(),
+  JSON.stringify(outputSizeFor(1, 1, 2.0, 8, { w: 800, h: 600.5 })),
+);
+check(
+  "ручной размер: 601.5 округляется как Python (602)",
+  outputSizeFor(1, 1, 2.0, 8, { w: 800, h: 601.5 }).h === 602,
+  JSON.stringify(outputSizeFor(1, 1, 2.0, 8, { w: 800, h: 601.5 })),
+);
+check(
+  "ручной размер: мусор не превращается в 0",
+  outputSizeFor(1, 1, 2.0, 8, { w: 0.4, h: 0.4 }).w >= 1,
+);
+
+// ── 11. Mask Editor: опознание записи редактора ────────────────────────────
+// Имя шаблона — деталь фронтенда; жёсткий regex по «painted-masked» ломался бы
+// после обновления ComfyUI (покраска молча не работала). Наша запись источника
+// (currentSource) маской не считается.
+check(
+  "Mask Editor: стандартное имя распознано",
+  isMaskEditorValue("clipspace-painted-masked-123.png [input]", "photo.png") === true,
+);
+check(
+  "Mask Editor: другое имя шаблона (clipspace-mask) распознано",
+  isMaskEditorValue("clipspace-mask-456.png [input]", "photo.png") === true,
+);
+check(
+  "Mask Editor: текущий источник не считается маской",
+  isMaskEditorValue("photo.png [input]", "photo.png") === false,
+);
+check("Mask Editor: пустое значение — не маска", isMaskEditorValue("", "") === false);
+check("Mask Editor: обычный файл — не маска", isMaskEditorValue("clip.png [input]", "photo.png") === false);
+check(
+  "Mask Editor: путь с подпапкой опознаётся по имени файла",
+  isMaskEditorValue("sub/clipspace-paint-1.png [input]", "sub/photo.png") === true,
 );
 
 // ── итог ───────────────────────────────────────────────────────────────────

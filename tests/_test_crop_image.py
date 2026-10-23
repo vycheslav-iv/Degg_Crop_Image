@@ -329,6 +329,14 @@ high = mod.output_size(1000, 1000, 2.0, 512)
 check("output_size multiplicity 512 honoured", high[0] % 512 == 0 and high[1] % 512 == 0, high)
 check("degenerate output_size stays positive", min(mod.output_size(0, 0, 0, 0)) >= 8)
 
+# Ручной размер — это ТОЧНЫЙ размер результата: он не округляется до кратности.
+# Иначе картинка 1001×751 получает 1000×752 и выход пересэмплируется, хотя
+# пользователь ничего не обрезал (кнопка «Сбросить»/загрузка картинки).
+exact = mod.output_size(1000, 1000, 2.0, 8, (1001, 751))
+check("output_size manual size is exact (no multiplicity rounding)", exact == (1001, 751), exact)
+exact_odd = mod.output_size(1000, 1000, 2.0, 64, (37, 29))
+check("output_size manual size exact at step 64", exact_odd == (37, 29), exact_odd)
+
 # ─────────────────────────── 5. frame_geometry ─────────────────────────────
 
 geo = mod.frame_geometry(full, 100, 100, 100, 100)
@@ -468,6 +476,23 @@ check(
 out, mask, w, h = mod.render_frames(make_image(1, 10, 10), None, full, "white", "bicubic", 0.0001, 1)
 check("rgb source -> 3 channels", out.shape[-1] == 3, out.shape)
 
+# Сброс к изображению: полный кадр + ручной размер = размер источника ⇒
+# выход обязан совпасть с источником пиксель в пиксель (ресайза быть не должно).
+src = make_image(1, 29, 37)
+out, mask, w, h = mod.render_frames(src, None, full, "transparent", "lanczos", 2.0, 8, (37, 29))
+check("full frame + exact manual keeps size", (w, h) == (37, 29), (w, h))
+check("full frame + exact manual shape", out.shape[:3] == (1, 29, 37), out.shape)
+check(
+    "full frame + exact manual keeps pixels",
+    all(
+        close(out[0, y, x, c], src[0, y, x, c])
+        for y in range(29)
+        for x in range(37)
+        for c in range(3)
+    ),
+    "pixels differ",
+)
+
 # RGB source + transparent fill gains the alpha channel.
 out, mask, w, h = mod.render_frames(make_image(1, 10, 10), None, full, "transparent", "bicubic", 0.0001, 1)
 check("transparent adds alpha", out.shape[-1] == 4, out.shape)
@@ -572,10 +597,35 @@ check(
     and _cy["step"] == 1,
     {"center_x": _cx, "center_y": _cy},
 )
-check(
-    "Python без русского текста",
-    not any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in str(types)) ,
-)
+# Python — EN-источник интерфейса: русский живёт в locales/. Проверяем ТОЛЬКО
+# объявленные тексты (типы, tooltip, description) — не список файлов папки
+# `input`: имена файлов даёт пользователь, и кириллица в них роняла проверку.
+def _ui_text(value):
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _ui_text(item)]
+    if isinstance(value, (list, tuple)):
+        return [text for item in value for text in _ui_text(item)]
+    return []
+
+
+def _ru(text):
+    return any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in text)
+
+
+_ui_strings = []
+for _group in types.values():
+    for _name, _spec in _group.items():
+        if _name == "image_file":
+            continue  # список файлов пользователя, а не текст интерфейса
+        _ui_strings.append(_name)
+        if len(_spec) > 1 and isinstance(_spec[1], dict):
+            _opts = {k: v for k, v in _spec[1].items() if k != "default"}
+            _ui_strings.extend(_ui_text(_opts))
+_ui_strings.append(str(getattr(mod.DeggCropImage, "DESCRIPTION", "")))
+_ru_ui = [text for text in _ui_strings if _ru(text)]
+check("Python без русского текста в объявленном интерфейсе", not _ru_ui, _ru_ui[:3])
 check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom_nodes/Image")
 # Интерфейсные входы объявлены НЕОБЯЗАТЕЛЬНЫМИ: сервер их не читает, и API
 # не должен требовать их передавать. (Сокет image и выбор файла image_file
@@ -697,6 +747,424 @@ check(
     (w, h),
 )
 check("mapping registered", mod.NODE_CLASS_MAPPINGS.get("DeggCropImage") is mod.DeggCropImage)
+
+
+# ── Штатный Mask Editor: Paint-слой обязан попасть в результат ─────────────
+# Редактор сохраняет ОДИН файл — «=clipspace-painted-masked-<ts>.png»:
+#   RGB   = исходная картинка + слой Paint (цветная кисть);
+#   альфа = 255 - маска  ⇒  маска = 1 - альфа (конвенция ComfyUI).
+# Значит сервер обязан взять из этого файла И картинку, И маску — ровно так,
+# как это делает LoadImage. Иначе покраска цветной кистью теряется: пользователь
+# рисует, сохраняет, а на выходе исходная картинка.
+def _painted_image():
+    data = []
+    for _y in range(4):
+        for x in range(4):
+            data += [1.0, 0.0, 0.0] if x < 2 else [0.5, 0.5, 0.5]
+    return T((1, 4, 4, 3), data)
+
+
+def _mask_columns(left: bool):
+    data = []
+    for _y in range(4):
+        for x in range(4):
+            data.append(1.0 if (left and x < 2) else 0.0)
+    return T((1, 4, 4), data)
+
+
+def _editor_loader(mask_tensor):
+    painted = _painted_image()
+
+    def loader(name):
+        text = str(name)
+        if text == "photo.png":
+            return make_image(1, 4, 4), None
+        if text.startswith("clipspace-painted-masked-"):
+            return painted, mask_tensor
+        return None, None
+
+    return loader
+
+
+_editor_node = mod.DeggCropImage()
+
+
+def _run_editor(mask_tensor):
+    _orig = mod.load_source_file
+    mod.load_source_file = _editor_loader(mask_tensor)
+    try:
+        return _editor_node.crop(
+            image_file="photo.png",
+            mask_file="clipspace-painted-masked-1.png [input]",
+            crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+            output_size="4,4",
+            multiplicity=8,
+            fill="transparent",
+        )
+    finally:
+        mod.load_source_file = _orig
+
+
+_out, _mask, _ow, _oh = _run_editor(_mask_columns(left=False))
+check(
+    "Mask Editor: Paint-слой (цветная кисть) попадает в результат",
+    close(_out[0, 0, 0, 0], 1.0) and close(_out[0, 0, 0, 1], 0.0),
+    {"left_pixel_rgb": [_out[0, 0, 0, c] for c in range(3)], "size": (_ow, _oh)},
+)
+check(
+    "Mask Editor: пустая маска ничего не вырезает (альфа = 1)",
+    all(close(_out[0, y, x, 3], 1.0) for y in range(4) for x in range(4)),
+    {"alpha": [[_out[0, y, x, 3] for x in range(4)] for y in range(4)]},
+)
+
+_out2, _mask2, _ow2, _oh2 = _run_editor(_mask_columns(left=True))
+check(
+    "Mask Editor: нарисованная маска вырезает область (альфа = 0 слева)",
+    close(_out2[0, 0, 0, 3], 0.0) and close(_out2[0, 0, 3, 3], 1.0),
+    {"alpha_row": [_out2[0, 0, x, 3] for x in range(4)]},
+)
+# ── Картинка по КАБЕЛЮ + покраска: Paint-слой обязан выйти ─────────────────
+# Жалоба (2026-10-23): подключил картинку проводом, нарисовал кистью, сохранил
+# (превью показывает покраску), запустил — на выходе картинка БЕЗ покраски.
+# Причина: при поданном сокете сервер брал только маску из файла редактора, а
+# картинку — из сокета, поэтому слой Paint (он живёт в RGB файла) терялся.
+# Файл редактора = ЭТА ЖЕ картинка + Paint, поэтому при совпадении основы он
+# и должен быть источником картинки. Если основа ДРУГАЯ (файл от прошлой
+# картинки), побеждает сокет — иначе на выходе чужая картинка.
+def _painted_from(base, stroke=None):
+    """Копия картинки с нарисованным пятном (как файл редактора)."""
+    data = list(base.data)
+    if stroke is not None:
+        y, x, rgb = stroke
+        start = ((0 * base.shape[1] + y) * base.shape[2] + x) * base.shape[3]
+        for c, value in enumerate(rgb):
+            data[start + c] = float(value)
+    return T(base.shape, data)
+
+
+_BASE = make_image(1, 4, 4)
+_PAINTED = _painted_from(_BASE, stroke=(1, 1, (1.0, 0.0, 0.0)))
+
+
+def _wire_loader(base):
+    def loader(name):
+        text = str(name)
+        if text == "photo.png":
+            return base, None
+        if text.startswith("clipspace-painted-masked-"):
+            return _PAINTED, _mask_columns(left=False)
+        return None, None
+
+    return loader
+
+
+def _run_wire(base, painted_name="clipspace-painted-masked-1.png [input]"):
+    _orig = mod.load_source_file
+    mod.load_source_file = _wire_loader(base)
+    try:
+        return _editor_node.crop(
+            image=base,
+            image_file="photo.png",
+            mask_file=painted_name,
+            crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+            output_size="4,4",
+            multiplicity=8,
+            fill="transparent",
+        )
+    finally:
+        mod.load_source_file = _orig
+
+
+_wire_out, _wire_mask, _ww, _wh = _run_wire(_BASE)
+check(
+    "Mask Editor: картинка по кабелю — Paint-слой попадает в результат",
+    close(_wire_out[0, 1, 1, 0], 1.0)
+    and close(_wire_out[0, 1, 1, 1], 0.0)
+    and close(_wire_out[0, 0, 0, 0], _BASE[0, 0, 0, 0]),
+    {"stroke_pixel": [_wire_out[0, 1, 1, c] for c in range(3)]},
+)
+
+_OTHER = T(_BASE.shape, [0.25] * (4 * 4 * 3))
+_stale_out, _stale_mask, _stw, _sth = _run_wire(_OTHER)
+check(
+    "Mask Editor: файл от ДРУГОЙ картинки не подменяет источник из кабеля",
+    close(_stale_out[0, 0, 0, 0], 0.25) and close(_stale_out[0, 1, 1, 0], 0.25),
+    {"pixel": [_stale_out[0, 0, 0, c] for c in range(3)]},
+)
+
+check(
+    "Mask Editor: Paint-слой сохраняется и в месте, оставленном маской",
+    close(_out2[0, 3, 3, 0], 0.5),
+    {"right_pixel_rgb": [_out2[0, 3, 3, c] for c in range(3)]},
+)
+
+# ──────────── 8. ФАЙЛЫ: границы input, EXIF, кратность, валидация ──────────
+# Нода читает картинку по ИМЕНИ из input (как LoadImage). Три обязательных
+# свойства: имя не выводит за пределы input (path traversal), поворот EXIF
+# применён к пикселям (иначе рамка не совпадает с тем, что видно), а служебные
+# входы не падают на мусоре. Проверяется на реальных файлах с заглушками
+# PIL/folder_paths: прибор обязан различать вызовы, а не подтверждать сам себя.
+
+import os
+import tempfile
+import time
+import types as _types
+
+
+class _Arr:
+    """numpy-заглушка: astype/деление/вычитание сохраняют вложенные списки."""
+
+    def __init__(self, data):
+        self.data = data
+
+    def astype(self, dtype):
+        return self
+
+    def __truediv__(self, other):
+        return _Arr(_map_num(self.data, lambda v: v / float(other)))
+
+    def __rsub__(self, other):
+        return _Arr(_map_num(self.data, lambda v: float(other) - v))
+
+
+def _map_num(node, fn):
+    if isinstance(node, list):
+        return [_map_num(item, fn) for item in node]
+    return fn(node)
+
+
+def _from_numpy(value):
+    """torch.from_numpy: вложенные списки -> T (как настоящий torch)."""
+    data = getattr(value, "data", value)
+    shape = []
+    node = data
+    while isinstance(node, list):
+        shape.append(len(node))
+        node = node[0] if node else None
+    flat = []
+
+    def walk(item):
+        if isinstance(item, list):
+            for sub in item:
+                walk(sub)
+        else:
+            flat.append(float(item))
+
+    walk(data)
+    return T(tuple(shape), flat)
+
+
+sys.modules["torch"].from_numpy = _from_numpy
+
+_IO_BASE = Path(tempfile.mkdtemp(prefix="degg_io_"))
+_IO_INPUT = _IO_BASE / "input"
+_IO_INPUT.mkdir()
+(_IO_BASE / "secret.png").write_bytes(b"outside the input folder")
+(_IO_INPUT / "ok.png").write_bytes(b"exif=1")
+(_IO_INPUT / "rot.jpg").write_bytes(b"exif=6")
+_IO_OPENED = []
+_IO_TRANSPOSED = []
+
+
+class _IOHandle:
+    """PIL-заглушка: пиксели 40x20, поворот по метке в файле (exif=6)."""
+
+    def __init__(self, path):
+        self.path = path
+        body = path.read_text(errors="ignore")
+        self.orientation = 6 if "exif=6" in body else 1
+        self.size = (20, 40)  # ширина, высота — как у PIL
+        self.pixels = [[[0.5, 0.25, 0.75] for _ in range(20)] for _ in range(40)]
+        self.converted = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def convert(self, mode):
+        self.converted = mode
+        return self
+
+    def getbands(self):
+        return ("R", "G", "B")
+
+    def getchannel(self, name):
+        return _IOChannel()
+
+
+class _IOChannel:
+    pixels = [[0.0] * 20 for _ in range(40)]
+
+
+def _io_open(path):
+    target = Path(str(path))
+    if not target.is_file():
+        raise FileNotFoundError(str(target))
+    _IO_OPENED.append(str(target))
+    return _IOHandle(target)
+
+
+def _io_exif_transpose(img):
+    _IO_TRANSPOSED.append(img.path)
+    if img.orientation in (5, 6, 7, 8):
+        img.pixels = [list(col) for col in zip(*img.pixels)]
+        img.size = (img.size[1], img.size[0])
+    return img
+
+
+_np_mod = _types.ModuleType("numpy")
+_np_mod.float32 = "float32"
+_np_mod.array = lambda obj: _Arr(getattr(obj, "pixels", obj))
+sys.modules["numpy"] = _np_mod
+
+_pil_mod = _types.ModuleType("PIL")
+_pil_image = _types.ModuleType("PIL.Image")
+_pil_image.open = _io_open
+_pil_ops = _types.ModuleType("PIL.ImageOps")
+_pil_ops.exif_transpose = _io_exif_transpose
+_pil_mod.Image = _pil_image
+_pil_mod.ImageOps = _pil_ops
+sys.modules["PIL"] = _pil_mod
+sys.modules["PIL.Image"] = _pil_image
+sys.modules["PIL.ImageOps"] = _pil_ops
+
+_fp_mod = _types.ModuleType("folder_paths")
+_fp_mod.get_input_directory = lambda: str(_IO_INPUT)
+_fp_mod.filter_files_content_types = lambda files, types_: files
+sys.modules["folder_paths"] = _fp_mod
+
+_io_img, _io_mask = mod.load_source_file("ok.png")
+check(
+    "файл из input читается по имени",
+    _io_img is not None and _io_img.shape == (1, 40, 20, 3),
+    None if _io_img is None else _io_img.shape,
+)
+
+_IO_OPENED.clear()
+_trav_img, _trav_mask = mod.load_source_file("../secret.png")
+check(
+    "path traversal: '../' за пределы input не читается",
+    _trav_img is None and _trav_mask is None,
+    None if _trav_img is None else "файл вне input прочитан",
+)
+check(
+    "path traversal: файл вне input не открывался",
+    not any("secret.png" in item for item in _IO_OPENED),
+    _IO_OPENED,
+)
+
+_abs_out = str(_IO_BASE / "secret.png")
+_abs_img, _ = mod.load_source_file(_abs_out)
+check(
+    "path traversal: абсолютный путь вне input отклонён",
+    _abs_img is None,
+    _abs_out if _abs_img is not None else "",
+)
+
+_abs_in = str(_IO_INPUT / "ok.png")
+_abs_in_img, _ = mod.load_source_file(_abs_in)
+check(
+    "абсолютный путь ВНУТРИ input разрешён (старые воркфлоу)",
+    _abs_in_img is not None,
+    _abs_in,
+)
+
+_IO_TRANSPOSED.clear()
+_rot_img, _ = mod.load_source_file("rot.jpg")
+check("EXIF: поворот применяется (ImageOps.exif_transpose)", len(_IO_TRANSPOSED) == 1, len(_IO_TRANSPOSED))
+check(
+    "EXIF: пиксели повёрнуты (40x20 -> 20x40, как показал бы браузер)",
+    _rot_img is not None and _rot_img.shape == (1, 20, 40, 3),
+    None if _rot_img is None else _rot_img.shape,
+)
+
+_missing_img, _missing_mask = mod.load_source_file("нет-такого.png")
+check("отсутствующий файл -> пусто", _missing_img is None and _missing_mask is None)
+
+# Пустой результат: кратность не должна ронять ноду (torch: negative dim).
+for _mult, _want in ((-8, 1), (0, 1)):
+    try:
+        _empty_img, _empty_mask, _ew, _eh = mod.DeggCropImage().crop(
+            image=None, image_file="", mask_file="", multiplicity=_mult
+        )
+        _ok_empty = (
+            _empty_img.shape == (1, _want, _want, 3)
+            and _empty_mask.shape == (1, _want, _want)
+            and (_ew, _eh) == (0, 0)
+        )
+        _detail = {"image": _empty_img.shape, "mask": _empty_mask.shape}
+    except Exception as exc:  # noqa: BLE001 - падение и есть дефект
+        _ok_empty = False
+        _detail = f"{type(exc).__name__}: {exc}"
+    check(f"пустой результат: multiplicity={_mult} не падает", _ok_empty, _detail)
+
+# image списком (батч приходит как list) — это поданная картинка, а не повод
+# молча взять файл: иначе на выходе чужое изображение.
+_list_img, _, _lw, _lh = mod.DeggCropImage().crop(
+    image=[make_image(1, 4, 4)],
+    image_file="ok.png",
+    mask_file="",
+    crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+    output_size="4,4",
+    multiplicity=8,
+    megapixels=2.0,
+    fill="transparent",
+)
+_direct_img, _, _dw, _dh = mod.DeggCropImage().crop(
+    image=make_image(1, 4, 4),
+    image_file="ok.png",
+    mask_file="",
+    crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+    output_size="4,4",
+    multiplicity=8,
+    megapixels=2.0,
+    fill="transparent",
+)
+check(
+    "image списком: берётся картинка из списка, а не файл",
+    (_lw, _lh) == (_dw, _dh) and close(_list_img[0, 0, 0, 0], _direct_img[0, 0, 0, 0]),
+    {"list": (_lw, _lh), "direct": (_dw, _dh)},
+)
+
+# Валидация входов: битый файл виден до запуска, пустое значение законно.
+check(
+    "VALIDATE_INPUTS: пустые значения проходят",
+    mod.DeggCropImage.VALIDATE_INPUTS(image_file="", mask_file="") is True,
+)
+check(
+    "VALIDATE_INPUTS: существующий файл проходит",
+    mod.DeggCropImage.VALIDATE_INPUTS(image_file="ok.png", mask_file="rot.jpg [input]") is True,
+)
+_bad = mod.DeggCropImage.VALIDATE_INPUTS(image_file="ok.png", mask_file="удалён.png")
+check(
+    "VALIDATE_INPUTS: отсутствующий файл -> сообщение об ошибке",
+    isinstance(_bad, str) and "удалён.png" in _bad,
+    _bad,
+)
+_bad_out = mod.DeggCropImage.VALIDATE_INPUTS(image_file="../secret.png", mask_file="")
+check(
+    "VALIDATE_INPUTS: путь вне input -> ошибка",
+    isinstance(_bad_out, str),
+    _bad_out,
+)
+
+# Кэш: перезапись файла с ТЕМ ЖЕ именем обязана пересчитать ноду (как LoadImage).
+_stamp_a = mod.DeggCropImage.IS_CHANGED(image_file="ok.png", mask_file="")
+_stamp_b = mod.DeggCropImage.IS_CHANGED(image_file="ok.png", mask_file="")
+check("IS_CHANGED: без изменений штамп совпадает", _stamp_a == _stamp_b, (_stamp_a, _stamp_b))
+_ok_path = _IO_INPUT / "ok.png"
+_ok_path.write_bytes(b"exif=1 reuploaded")
+os.utime(_ok_path, (time.time() + 5, time.time() + 5))
+_stamp_c = mod.DeggCropImage.IS_CHANGED(image_file="ok.png", mask_file="")
+check("IS_CHANGED: перезапись файла меняет штамп", _stamp_c != _stamp_a, (_stamp_a, _stamp_c))
+_stamp_d = mod.DeggCropImage.IS_CHANGED(image_file="", mask_file="")
+check(
+    "IS_CHANGED: без файлов штамп стабилен (кэш по сокету не ломается)",
+    _stamp_d == mod.DeggCropImage.IS_CHANGED(image_file="", mask_file=""),
+    _stamp_d,
+)
 
 # ─────────────────────────────── summary ───────────────────────────────────
 

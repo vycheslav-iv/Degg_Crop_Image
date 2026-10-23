@@ -140,13 +140,15 @@ def output_size(
     multiple independently (``round``), exactly like ``nodes_resolution.py``,
     so the same ratio/MP/multiple gives the same numbers in both nodes.
 
-    ``manual`` is the size typed by the user: it wins over the megapixel
-    target and is only rounded to the multiplicity.
+    ``manual`` is the exact size the user (or the JS editor's reset-to-image)
+    asked for: it wins over the megapixel target and is used AS IS — rounding
+    it to the multiplicity would resample a source that was never cropped
+    (1001x751 -> 1000x752), so "reset to image" would change pixels.
     """
     step = max(1, int(multiplicity))
     if manual is not None:
-        width = max(step, py_round(manual[0] / step) * step)
-        height = max(step, py_round(manual[1] / step) * step)
+        width = max(1, py_round(float(manual[0])))
+        height = max(1, py_round(float(manual[1])))
         return int(width), int(height)
 
     rect_w = max(float(rect_w), MIN_FRACTION)
@@ -263,50 +265,88 @@ def input_image_files():
         return []
 
 
-def load_source_file(name: str):
-    """Load an image file from the input folder (like LoadImage).
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
-    Returns ``(image_tensor, mask)`` or ``(None, None)`` if the file is
-    missing/unreadable. The mask follows the ComfyUI convention: 1 = the area
-    is hidden (the file's transparent alpha).
-    """
-    if not name:
-        return None, None
-    try:
-        import numpy as np
-        from PIL import Image
 
-        import folder_paths
-    except Exception:
-        return None, None
-
-    text = str(name).strip()
-    if text.startswith("["):  # старый формат аннотированного пути
+def _strip_annotation(name: str) -> str:
+    """Strip the frontend annotation: ``"name.png [input]"`` -> ``"name.png"``."""
+    text = str(name or "").strip()
+    if text.startswith("["):  # старый формат: JSON-массив
         try:
-            import json
-
-            text = json.loads(text)[0]
+            text = str(json.loads(text)[0]).strip()
         except Exception:
-            return None, None
-    # Новый формат фронтенда: "имя.png [output]" / "имя.png [temp]".
+            return ""
     for marker in (" [output]", " [temp]", " [input]"):
         if text.lower().endswith(marker):
             text = text[: -len(marker)].strip()
             break
-    text = text.replace("\\", "/").lstrip("/")
-    base = folder_paths.get_input_directory().replace("\\", "/").rstrip("/")
-    path = text
-    if not text.startswith(base):
-        path = f"{base}/{text}"
-    if not path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp")):
+    return text
+
+
+def input_file_path(name: str):
+    """Absolute path of a file INSIDE the input folder, or ``None``.
+
+    The name comes from a workflow, so it must not escape the input folder.
+    Containment is checked on ``realpath`` with a common prefix, not with
+    ``startswith``: a string prefix would accept ``../secret.png`` and a
+    sibling ``input2`` folder. An absolute path is allowed only when it really
+    lies inside the input folder (older workflows stored it that way).
+    """
+    text = _strip_annotation(name)
+    if not text:
+        return None
+    try:
+        import os
+
+        import folder_paths
+
+        base = os.path.realpath(folder_paths.get_input_directory())
+    except Exception:
+        return None
+    text = text.replace("\\", "/")
+    candidate = text if os.path.isabs(text) else os.path.join(base, text)
+    try:
+        path = os.path.realpath(candidate)
+    except Exception:
+        return None
+    if os.path.commonpath([base, path]) != base or path == base:
+        return None
+    if not path.lower().endswith(IMAGE_EXTENSIONS):
+        return None
+    try:
+        return path if os.path.isfile(path) else None
+    except OSError:
+        return None
+
+
+def load_source_file(name: str):
+    """Load an image file from the input folder (like LoadImage).
+
+    Returns ``(image_tensor, mask)`` or ``(None, None)`` if the file is
+    missing/outside the input folder/unreadable. The mask follows the ComfyUI
+    convention: 1 = the area is hidden (the file's transparent alpha).
+    EXIF orientation is applied, as LoadImage does, so the pixels match the
+    preview the browser shows.
+    """
+    if not name:
+        return None, None
+    path = input_file_path(name)
+    if path is None:
         return None, None
     try:
+        import numpy as np
+        from PIL import Image, ImageOps
+    except Exception:
+        return None, None
+
+    try:
         with Image.open(path) as handle:
-            image = handle.convert("RGB")
+            upright = ImageOps.exif_transpose(handle) or handle
+            image = upright.convert("RGB")
             array = np.array(image).astype(np.float32) / 255.0
             alpha = None
-            if "A" in handle.getbands():
-                alpha = 1.0 - np.array(handle.getchannel("A")).astype(np.float32) / 255.0
+            if "A" in upright.getbands():
+                alpha = 1.0 - np.array(upright.getchannel("A")).astype(np.float32) / 255.0
     except Exception:
         return None, None
 
@@ -315,6 +355,56 @@ def load_source_file(name: str):
     if alpha is not None:
         mask = torch.from_numpy(alpha)[None, ...]
     return tensor, mask
+
+
+def painted_matches_source(painted, source, tolerance: float = 0.08) -> bool:
+    """True when the editor's file is the SAME picture as the source.
+
+    The standard Mask Editor saves one file: RGB = the image it was opened on
+    plus the Paint layer, alpha = the inverted mask. When the image arrives by
+    wire, that file is still the only place the Paint layer lives — but it may
+    be left over from a previous picture. Taking it blindly would put a foreign
+    image on the output, so the base is compared first.
+
+    The comparison uses the MEDIAN difference over a sampling grid: paint
+    strokes are a minority of the pixels, so for the right picture the median
+    is zero, while a leftover file of another picture differs nearly everywhere.
+    An 8-bit preview PNG against a float tensor differs by ~1/255, far below
+    the tolerance.
+    """
+    if painted is None or source is None:
+        return False
+    try:
+        p_shape = tuple(int(v) for v in painted.shape)
+        s_shape = tuple(int(v) for v in source.shape)
+    except Exception:
+        return False
+    if len(p_shape) != 4 or len(s_shape) != 4:
+        return False
+    if p_shape[0] != 1 or p_shape[1] != s_shape[1] or p_shape[2] != s_shape[2]:
+        return False
+    height, width = p_shape[1], p_shape[2]
+    channels = min(p_shape[3], s_shape[3], 3)
+    if height <= 0 or width <= 0 or channels <= 0:
+        return False
+    step_y = max(1, height // 48)
+    step_x = max(1, width // 48)
+    diffs = []
+    for y in range(0, height, step_y):
+        for x in range(0, width, step_x):
+            worst = 0.0
+            for c in range(channels):
+                try:
+                    delta = abs(float(painted[0, y, x, c]) - float(source[0, y, x, c]))
+                except Exception:
+                    return False
+                if delta > worst:
+                    worst = delta
+            diffs.append(worst)
+    if not diffs:
+        return False
+    diffs.sort()
+    return diffs[len(diffs) // 2] <= tolerance
 
 
 def _fill_color(mode: str, channels: int):
@@ -600,6 +690,41 @@ class DeggCropImage:
         "The frame is edited directly on the node and stored in the workflow."
     )
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, image_file="", mask_file="", **rest):
+        """A missing file (or a path outside the input folder) fails before run.
+
+        LoadImage behaves the same way. An empty value is legal: the source may
+        arrive over a wire while the file widget stays empty.
+        """
+        for name in (image_file, mask_file):
+            text = _strip_annotation(name) if name else ""
+            if text and input_file_path(text) is None:
+                return f"Invalid file (missing or outside the input folder): {text}"
+        return True
+
+    @classmethod
+    def IS_CHANGED(cls, image_file="", mask_file="", **rest):
+        """Stamp of the source files: a re-upload under the SAME name reaches the cache.
+
+        Without files (source over a wire) the stamp is constant: the upstream
+        hash is responsible for the picture, so there is no reason to break the
+        cache.
+        """
+        parts = []
+        for name in (image_file, mask_file):
+            path = input_file_path(name) if name else None
+            if path is None:
+                continue
+            try:
+                import os
+
+                stat = os.stat(path)
+            except OSError:
+                continue
+            parts.append(f"{os.path.basename(path)}:{stat.st_size}:{stat.st_mtime_ns}")
+        return "|".join(parts)
+
     def crop(
         self,
         image=None,
@@ -628,22 +753,52 @@ class DeggCropImage:
         # воркфлоу: служебный виджет Mask Editor назывался `image`). Строка —
         # это не картинка, значит источник не подан: читаем файл, а не отдаём
         # пустой результат.
+        # Файл штатного Mask Editor — это результат рисования целиком:
+        # RGB = исходная картинка + слой Paint (цветная кисть), альфа =
+        # инвертированная маска. Как LoadImage, берём из него И картинку, И
+        # маску: если взять только маску, покраска цветной кистью теряется.
+        painted_image = None
+        painted_mask = None
+        if mask_file:
+            painted_image, painted_mask = load_source_file(mask_file)
+
         file_mask = None
+        if isinstance(image, (list, tuple)):
+            # Батч может прийти списком кадров: это поданная картинка, а не
+            # повод молча подставить файл из виджета (иначе на выходе чужое).
+            image = image[0] if image else None
         if image is not None and not hasattr(image, "shape"):
             image = None
         if image is None:
-            image, file_mask = load_source_file(image_file)
+            if painted_image is not None:
+                image = painted_image
+                file_mask = painted_mask
+            else:
+                image, file_mask = load_source_file(image_file)
+        elif painted_image is not None and painted_matches_source(painted_image, image):
+            # Картинка подана сокетом, но файл редактора — ЭТА ЖЕ картинка со
+            # слоем Paint: берём его, иначе покраска по картинке из кабеля
+            # теряется (жалоба 2026-10-23: нарисовал, сохранил, а на выходе
+            # исходник). Основу сверяем, чтобы не подставить картинку от
+            # прошлого источника. В батче красим первый кадр — редактор
+            # открывался по нему.
+            if int(image.shape[0]) == 1:
+                image = painted_image
+            else:
+                image = torch.cat([painted_image, image[1:]], dim=0)
         # Маска: явный вход важнее файла с нарисованной маской, тот важнее
         # альфы исходного файла.
-        if mask is None and mask_file:
-            _, painted_mask = load_source_file(mask_file)
-            mask = painted_mask
-        if mask is None and file_mask is not None:
-            mask = file_mask
+        if mask is None:
+            if painted_mask is not None:
+                mask = painted_mask
+            elif file_mask is not None:
+                mask = file_mask
 
         if image is None or int(getattr(image, "shape", (0,))[0] or 0) == 0:
+            # Пустой результат: размер задан кратностью, но torch не примет
+            # отрицательный/нулевой размер — это не ошибка пользователя.
             empty = torch.zeros((1, max(int(multiplicity), 1), max(int(multiplicity), 1), 3))
-            return (empty, torch.zeros((1, int(multiplicity), int(multiplicity))), 0, 0)
+            return (empty, torch.zeros((1, max(int(multiplicity), 1), max(int(multiplicity), 1))), 0, 0)
 
         rect = parse_rect(crop_rect)
         method = resample if resample in RESAMPLE_METHODS else "lanczos"
