@@ -141,15 +141,20 @@ def output_size(
     so the same ratio/MP/multiple gives the same numbers in both nodes.
 
     ``manual`` is the exact size the user (or the JS editor's reset-to-image)
-    asked for: it wins over the megapixel target and is used AS IS — rounding
-    it to the multiplicity would resample a source that was never cropped
-    (1001x751 -> 1000x752), so "reset to image" would change pixels.
+    asked for: it wins over the megapixel target, but it goes through the SAME
+    multiplicity step — otherwise "Кратность" would be silently ignored
+    whenever the size came from the source image (file upload / «Сбросить»),
+    which is exactly what was reported (2026-10-29). ``multiplicity=0`` means
+    "no rounding", so the default keeps the source pixels 1:1.
     """
     step = max(1, int(multiplicity))
     if manual is not None:
         width = max(1, py_round(float(manual[0])))
         height = max(1, py_round(float(manual[1])))
-        return int(width), int(height)
+        return (
+            int(max(step, py_round(width / step) * step)),
+            int(max(step, py_round(height / step) * step)),
+        )
 
     rect_w = max(float(rect_w), MIN_FRACTION)
     rect_h = max(float(rect_h), MIN_FRACTION)
@@ -427,7 +432,7 @@ def render_frames(
     fill: str,
     resample: str,
     megapixels: float = 2.0,
-    multiplicity: int = 8,
+    multiplicity: int = 0,
     manual_size: tuple[int, int] | None = None,
 ):
     """Render the frame for every image in the batch.
@@ -508,11 +513,13 @@ class DeggCropImage:
                 "multiplicity": (
                     "INT",
                     {
-                        "default": 8,
-                        "min": 8,
+                        "default": 0,
+                        "min": 0,
                         "max": 128,
                         "step": 4,
-                        "tooltip": "Nearest multiple of the result to set the selected resolution to.",
+                        "tooltip": "Round the result size to a multiple of this value "
+                        "(0 = no rounding). Applies to the crop, to the source "
+                        "image and to the manual size.",
                     },
                 ),
                 "resample": (
@@ -745,7 +752,7 @@ class DeggCropImage:
         frame_w=0,
         frame_h=0,
         dim_outside=50,
-        multiplicity=8,
+        multiplicity=0,
         megapixels=2.0,
         resample="lanczos",
         fill="transparent",

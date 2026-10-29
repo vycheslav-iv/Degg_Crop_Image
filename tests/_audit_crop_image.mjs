@@ -111,13 +111,15 @@ check("Python: mask — необязательный MASK", /"mask":\s*\(\s*"MAS
 check("Python: lock_ratio по умолчанию включён", /"lock_ratio":[\s\S]{0,120}?"default":\s*True/.test(PY));
 check("Python: dim_outside 0..100", /"dim_outside":[\s\S]{0,160}?"max":\s*100/.test(PY));
 const multBlock = PY.slice(PY.indexOf('"multiplicity":'), PY.indexOf('"resample":'));
-check("Python: кратность 8..128 шагом 4 (как ResolutionSelector)", /"min":\s*8,/.test(multBlock) && /"max":\s*128,/.test(multBlock) && /"step":\s*4,/.test(multBlock));
+// 0 = «без округления»: загрузка картинки/«Сбросить» пишут точный размер
+// источника, и кратность обязана применяться к нему тоже.
+check("Python: кратность 0..128 шагом 4 (0 = без округления)", /"min":\s*0,/.test(multBlock) && /"max":\s*128,/.test(multBlock) && /"step":\s*4,/.test(multBlock));
 const mpBlock = PY.slice(PY.indexOf('"megapixels":'), PY.indexOf('"resample":'));
 check(
   "Python: мегапиксели 0.1..64, шаг 0.1 (ТЗ §7.2)",
   /"min":\s*0\.1,/.test(mpBlock) && /"max":\s*64\.0,/.test(mpBlock) && /"step":\s*0\.1,/.test(mpBlock),
 );
-check("Python: multiplicity по умолчанию 8", /"multiplicity":[\s\S]{0,120}?"default":\s*8/.test(PY));
+check("Python: multiplicity по умолчанию 0 (не подгоняет размер источника)", /"multiplicity":[\s\S]{0,120}?"default":\s*0/.test(PY));
 check("Python: megapixels по умолчанию 2.0", /"megapixels":[\s\S]{0,120}?"default":\s*2\.0/.test(PY));
 check("Python: 1 MP = 1024² (как ResolutionSelector)", /1024\.0 \* 1024\.0/.test(PY));
 check("Python: resample по умолчанию lanczos", /"resample":[\s\S]{0,120}?"default":\s*"lanczos"/.test(PY));
@@ -142,7 +144,7 @@ for (const key of ["transparent", "black", "white", "gray"]) {
 check("Python: банковское округление вынесено в py_round", /def\s+py_round\b/.test(PY));
 check("Python: snap использует py_round", /def\s+snap[\s\S]{0,200}?py_round\(/.test(PY));
 check("Python: шаг кратности применяется как есть", /step = max\(1, int\(multiplicity\)\)/.test(PY));
-check("Python: multiplicity 8..128 step 4 (как ResolutionSelector)", /"multiplicity":[\s\S]{0,120}?"min":\s*8[\s\S]{0,80}?"max":\s*128[\s\S]{0,80}?"step":\s*4/.test(PY));
+check("Python: multiplicity 0..128 step 4 (0 = без округления)", /"multiplicity":[\s\S]{0,120}?"min":\s*0[\s\S]{0,80}?"max":\s*128[\s\S]{0,80}?"step":\s*4/.test(PY));
 check("Python: кадр хранится в долях (нормализован)", /MIN_FRACTION|MAX_FRACTION/.test(PY));
 check("Python: mask заменяет альфу источника", /mask is not None/.test(PY));
 check("Python: нет транспортного хака _mp в rect", !/_mp\b/.test(PY));
@@ -527,25 +529,23 @@ check(
     /"frame_h":\s*\(\s*"INT"/.test(PY),
 );
 check(
-  "JS: итоговый размер результата (ручной или по мегапикселям)",
-  // Ручной размер берётся как есть (паритет с Python): переокругление ломало
-  // пиксельную идентичность после «Сбросить»/загрузки картинки.
-  /function resultSize\(\)[\s\S]{0,400}?state\.manual[\s\S]{0,200}?Math\.max\(1, pyRound/.test(JS) &&
+  "JS: итоговый размер результата (ручной или по мегапикселям), кратность — к обоим",
+  // Ручной размер теперь тоже проходит через snapSize: иначе кратность
+  // игнорировалась у загруженной картинки/после «Сбросить» (жалоба 2026-10-29).
+  /function resultSize\(\)[\s\S]{0,400}?state\.manual[\s\S]{0,300}?snapSize\(/.test(JS) &&
     // округление только паритетное: Math.round дал бы 601 на 600.5 при 600 в Python
     !/function resultSize\(\)[\s\S]{0,400}?Math\.round/.test(JS) &&
-    !/function resultSize\(\)[\s\S]{0,400}?snapSize\(state\.manual/.test(JS) &&
     /function resultSize\(\)[\s\S]{0,600}?computeOutputSize\(cropPx\(\)\.w, cropPx\(\)\.h/.test(JS),
 );
 check(
-  "JS: outputSizeFor не переокругляет ручной размер (identity-контракт)",
-  /export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,600}?Math\.max\(1, pyRound\(Number\(manual\.w\)\)\)/.test(JS) &&
-    !/export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,600}?Math\.round/.test(JS) &&
-    !/export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,600}?snapSize\(manual/.test(JS),
+  "JS: outputSizeFor применяет кратность к ручному размеру (как Python)",
+  /export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,700}?Math\.max\(1, pyRound\(Number\(manual\.w\)\)\)/.test(JS) &&
+    !/export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,700}?Math\.round/.test(JS) &&
+    /export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,700}?snapSize\(/.test(JS),
 );
 check(
-  "Python: ручной размер результата — точный (без округления до кратности)",
-  /if manual is not None:[\s\S]{0,200}?py_round\(float\(manual\[0\]\)\)/.test(PY) &&
-    !/if manual is not None:[\s\S]{0,200}?manual\[0\] \/ step/.test(PY),
+  "Python: ручной размер результата проходит через кратность",
+  /if manual is not None:[\s\S]{0,260}?py_round\(float\(manual\[0\]\)\)[\s\S]{0,400}?py_round\(width \/ step\) \* step/.test(PY),
 );
 check(
   "JS: плашка показывает ИТОГОВЫЙ размер (а не размер кадра)",
@@ -589,8 +589,10 @@ check(
 
 check(
   "JS: ручной размер сверяется с пропорциями кадра (инвариант)",
+  // Сверка идёт с ФАКТИЧЕСКИМ (уже округлённым) результатом: сохранённый
+  // 1001×751 при кратности 8 не должен считаться устаревшим против кадра 1000×752.
   /function dropStaleManual\(\)[\s\S]{0,600}?state\.manual = null/.test(JS) &&
-    /ratiosMatch\(state\.frac, state\.manual, state\.img\.w, state\.img\.h\)/.test(JS),
+    /ratiosMatch\(state\.frac, resultSize\(\), state\.img\.w, state\.img\.h\)/.test(JS),
 );
 check(
   "JS: свободный drag подстраивает ручной размер (пропорции результата следуют за кадром)",

@@ -303,17 +303,18 @@ export function snapSize(manual, multiplicity) {
 
 /**
  * Итоговый размер результата: ручной (если задан) или по мегапикселям.
- * Ручной размер — это ТОЧНЫЙ размер результата (его округляет только ввод в
- * поля W/H, `setResultSize`): переокругление здесь пересэмплировало бы
- * источник, который не обрезали (1001×751 → 1000×752). Паритет с `output_size`
- * в Python, где ручной размер тоже берётся как есть.
+ * Кратность применяется к ОБОИМ веткам: ручной размер — такой же итог, и его
+ * пишут загрузка картинки и «Сбросить», так что без округления здесь
+ * «Кратность» молча не работала вне режима кропа (жалоба 2026-10-29).
+ * multiplicity = 0 — без округления. Паритет с `output_size` в Python.
  */
 export function outputSizeFor(rectW, rectH, megapixels, multiplicity, manual) {
   if (manual && Number(manual.w) > 0 && Number(manual.h) > 0) {
-    return {
+    const base = {
       w: Math.max(1, pyRound(Number(manual.w))),
       h: Math.max(1, pyRound(Number(manual.h))),
     };
+    return snapSize(base, multiplicity);
   }
   return computeOutputSize(rectW, rectH, megapixels, multiplicity);
 }
@@ -931,17 +932,20 @@ function createEditor(node, widget) {
     return Number(mpWidget?.value ?? 2);
   }
 
+  /** Кратность из виджета; 0 = «без округления» (см. `snapSize`). */
   function multiplicity() {
-    return Math.max(1, Math.round(Number(multWidget?.value ?? 8)));
+    const value = Math.round(Number(multWidget?.value ?? 0));
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
   }
 
-  /** Итоговый размер результата: ручной размер важнее мегапикселей. */
+  /** Итоговый размер результата: ручной размер важнее мегапикселей.
+   * Кратность применяется к обоим (один и тот же итог — один и тот же шаг). */
   function resultSize() {
     if (state.manual) {
-      return {
+      return snapSize({
         w: Math.max(1, pyRound(Number(state.manual.w))),
         h: Math.max(1, pyRound(Number(state.manual.h))),
-      };
+      }, multiplicity());
     }
     return computeOutputSize(cropPx().w, cropPx().h, megapixels(), multiplicity());
   }
@@ -1083,9 +1087,17 @@ function createEditor(node, widget) {
   /** Ручной размер результата: пропорции кадра следуют за результатом
    * (площадь и центр сохраняются), иначе кадр растянулся бы. */
   function setResultSize(width, height) {
-    const manual = snapSize({ w: width, h: height }, multiplicity());
+    // Храним ЗАПРОШЕННЫЙ размер, а кратность применяем при выводе
+    // (`resultSize`): так снятие кратности возвращает точный размер, а не
+    // «залипшее» округление. Кадр следует за ОКРУГЛЁНным результатом —
+    // иначе кроп пришлось бы растягивать.
+    const manual = {
+      w: Math.max(1, pyRound(Number(width))),
+      h: Math.max(1, pyRound(Number(height))),
+    };
     state.manual = manual;
-    state.frac = frameWithRatio(state.frac, state.img.w, state.img.h, manual.w / manual.h);
+    const out = snapSize(manual, multiplicity());
+    state.frac = frameWithRatio(state.frac, state.img.w, state.img.h, out.w / out.h);
     commit();
   }
 
@@ -1128,7 +1140,10 @@ function createEditor(node, widget) {
    * иначе MP и пресет пропорций молча игнорировались бы, а кадр растягивался бы. */
   function dropStaleManual() {
     if (!state.manual || !state.img) return false;
-    if (ratiosMatch(state.frac, state.manual, state.img.w, state.img.h)) return false;
+    // Сверяем кадр с тем размером, который реально будет на выходе (уже с
+    // кратностью): иначе сохранённый ручной размер 1001×751 при кратности 8
+    // считался бы «устаревшим» относительно кадра, подогнанного под 1000×752.
+    if (ratiosMatch(state.frac, resultSize(), state.img.w, state.img.h)) return false;
     state.manual = null;
     return true;
   }

@@ -329,13 +329,18 @@ high = mod.output_size(1000, 1000, 2.0, 512)
 check("output_size multiplicity 512 honoured", high[0] % 512 == 0 and high[1] % 512 == 0, high)
 check("degenerate output_size stays positive", min(mod.output_size(0, 0, 0, 0)) >= 8)
 
-# Ручной размер — это ТОЧНЫЙ размер результата: он не округляется до кратности.
-# Иначе картинка 1001×751 получает 1000×752 и выход пересэмплируется, хотя
-# пользователь ничего не обрезал (кнопка «Сбросить»/загрузка картинки).
-exact = mod.output_size(1000, 1000, 2.0, 8, (1001, 751))
-check("output_size manual size is exact (no multiplicity rounding)", exact == (1001, 751), exact)
-exact_odd = mod.output_size(1000, 1000, 2.0, 64, (37, 29))
-check("output_size manual size exact at step 64", exact_odd == (37, 29), exact_odd)
+# Кратность применяется к ЛЮБОМУ итоговому размеру, включая ручной: загрузка
+# картинки и «Сбросить» пишут точный размер источника в output_size, и без
+# округления кратность молча игнорировалась (жалоба 2026-10-29).
+# 0 = без округления: размер источника остаётся ровно его пикселями.
+exact = mod.output_size(1000, 1000, 2.0, 0, (1001, 751))
+check("output_size manual + multiplicity 0 -> exact", exact == (1001, 751), exact)
+snapped = mod.output_size(1000, 1000, 2.0, 8, (1001, 751))
+check("output_size manual + multiplicity 8 -> 1000x752", snapped == (1000, 752), snapped)
+big = mod.output_size(1000, 1000, 2.0, 64, (1001, 751))
+check("output_size manual + multiplicity 64 -> 1024x768", big == (1024, 768), big)
+kept = mod.output_size(1000, 1000, 2.0, 8, (1000, 752))
+check("output_size manual already multiple stays", kept == (1000, 752), kept)
 
 # ─────────────────────────── 5. frame_geometry ─────────────────────────────
 
@@ -478,10 +483,20 @@ check("rgb source -> 3 channels", out.shape[-1] == 3, out.shape)
 
 # Сброс к изображению: полный кадр + ручной размер = размер источника ⇒
 # выход обязан совпасть с источником пиксель в пиксель (ресайза быть не должно).
+# Это свойство кратности 0 («без округления») — она стоит по умолчанию; при
+# кратности > 0 размер честно подгоняется (проверка ниже).
 src = make_image(1, 29, 37)
-out, mask, w, h = mod.render_frames(src, None, full, "transparent", "lanczos", 2.0, 8, (37, 29))
+out, mask, w, h = mod.render_frames(src, None, full, "transparent", "lanczos", 2.0, 0, (37, 29))
 check("full frame + exact manual keeps size", (w, h) == (37, 29), (w, h))
 check("full frame + exact manual shape", out.shape[:3] == (1, 29, 37), out.shape)
+_out8, _m8, _w8, _h8 = mod.render_frames(
+    src, None, full, "transparent", "lanczos", 2.0, 8, (37, 29)
+)
+check(
+    "full frame + exact manual + multiplicity 8 -> 40x32 (шаг честно применён)",
+    (_w8, _h8) == (40, 32) and _out8.shape[:3] == (1, 32, 40),
+    {"size": (_w8, _h8), "shape": _out8.shape},
+)
 check(
     "full frame + exact manual keeps pixels",
     all(
@@ -720,6 +735,14 @@ check(
     ),
     list(types["required"]),
 )
+# 0 = «без округления»: так у загруженной картинки/«Сбросить» сохраняется
+# контракт «выход = ровно пиксели источника», а кто хочет кратность — ставит её.
+check(
+    "кратность: 0 разрешена и стоит по умолчанию (0 = без округления)",
+    types["required"]["multiplicity"][1].get("min") == 0
+    and types["required"]["multiplicity"][1].get("default") == 0,
+    types["required"]["multiplicity"][1],
+)
 check(
     "вход mask остался необязательным",
     "mask" in types["optional"],
@@ -811,7 +834,7 @@ def _run_editor(mask_tensor):
             mask_file="clipspace-painted-masked-1.png [input]",
             crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
             output_size="4,4",
-            multiplicity=8,
+            multiplicity=0,
             fill="transparent",
         )
     finally:
@@ -881,7 +904,7 @@ def _run_wire(base, painted_name="clipspace-painted-masked-1.png [input]"):
             mask_file=painted_name,
             crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
             output_size="4,4",
-            multiplicity=8,
+            multiplicity=0,
             fill="transparent",
         )
     finally:

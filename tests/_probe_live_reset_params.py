@@ -8,13 +8,16 @@
 Проба открывает ComfyUI в headless Chrome и меряет:
   1. файл 768×768: `crop_rect` = весь кадр, `output_size` = "768,768",
      мегапиксели = 768·768/1024², выход = 768×768 и пиксельно равен источнику;
-  2. файл 1001×751 (стороны НЕ кратны multiplicity=8): параметры обязаны быть
-     точными ("1001,751"), выход — 1001×751 и пиксельно равен источнику
-     (кратность не должна «подгонять» размер, иначе изображение меняется);
+  2. файл 1001×751 (стороны НЕ кратны 8): при multiplicity=0 (по умолчанию)
+     параметры точные ("1001,751") и выход пиксельно равен источнику; подгонка
+     под кратность — это п.5;
   3. «Сбросить» после ручной обрезки и ручного размера возвращает ровно
      параметры источника, выход снова равен источнику;
   4. источник проводом (LoadImage → DeggCropImage): нода принимает размер
-     картинки, выход пиксельно равен источнику.
+     картинки, выход пиксельно равен источнику;
+  5. кратность применяется и к размеру источника: при multiplicity=8 картинка
+     1001×751 даёт 1000×752 (стороны кратны 8), при multiplicity=0 — снова
+     ровно 1001×751 (кратность не «залипает», обратима).
 
 Запуск (ComfyUI должен быть запущен):
     cd Degg_Crop_Image
@@ -229,6 +232,7 @@ STATE_JS = r"""
     megapixels: v('megapixels'),
     frame_w: v('frame_w'),
     frame_h: v('frame_h'),
+    multiplicity: v('multiplicity'),
     lock_ratio: v('lock_ratio'),
     aspect_ratio: v('aspect_ratio'),
     preview: img ? [img.naturalWidth, img.naturalHeight] : null,
@@ -257,6 +261,17 @@ MANGLE_JS = r"""
   out.value = '512,512';
   out.callback?.('512,512', app.canvas, n);
   return { crop_rect: rect.value, output_size: out.value };
+})()
+"""
+
+SET_MULT_JS = r"""
+(() => {
+  const n = window.__probeCrop;
+  const w = (n.widgets || []).find((x) => x.name === 'multiplicity');
+  if (!w) return null;
+  w.value = __MULT__;
+  w.callback?.(w.value, app.canvas, n);
+  return w.value;
 })()
 """
 
@@ -476,6 +491,54 @@ async def main() -> int:
 
             payload = await cdp.eval(PROMPT_JS, await_promise=True)
             identity("провод — выход", run_prompt(payload), src768, (768, 768))
+
+            # ── 5. кратность применяется к размеру источника (жалоба 2026-10-29) ──
+            # Пользователь: «Кратность вообще не работает, если картинка
+            # загружена файлом или подключена — работает только в режиме кропа».
+            # Ручной размер (его пишут загрузка и «Сбросить») обязан проходить
+            # через кратность так же, как мегапиксельный.
+            # Новая нода в режиме файла: __probeSetFile из секции 1 смотрел бы
+            # на узел, который g.clear() уже отсоединил от графа (node.graph
+            # null → NullGraphError из getInputNode).
+            setup_f = await cdp.eval(SETUP_JS)
+            print(f"→ нода для кратности: {setup_f.get('crop')}")
+            await cdp.eval(f"window.__probeSetFile({json.dumps(NAME_ODD)})")
+            await wait_for(
+                cdp,
+                "(() => { const n = window.__probeCrop; const w = (n.widgets || []).find(x => x.name === 'output_size');"
+                " const img = document.querySelector('.degg-crop__img');"
+                " return !!(w && w.value && img && img.naturalWidth === 1001); })()",
+                90, "output_size после повторной загрузки 1001×751",
+            )
+            await asyncio.sleep(0.5)
+            mult0 = await cdp.eval(SET_MULT_JS.replace("__MULT__", "0"))
+            await asyncio.sleep(0.4)
+            state = await cdp.eval(STATE_JS)
+            print(f"→ кратность 0: {state}")
+            check("кратность 0 принята виджетом", mult0 == 0, mult0)
+            params_check("кратность 0", state, 1001, 751)
+            payload = await cdp.eval(PROMPT_JS, await_promise=True)
+            identity("кратность 0 — выход", run_prompt(payload), src_odd, (1001, 751))
+
+            mult8 = await cdp.eval(SET_MULT_JS.replace("__MULT__", "8"))
+            await asyncio.sleep(0.4)
+            state = await cdp.eval(STATE_JS)
+            print(f"→ кратность 8: {state}")
+            check("кратность 8 принята виджетом", mult8 == 8, mult8)
+            params_check("кратность 8", state, 1000, 752)
+            payload = await cdp.eval(PROMPT_JS, await_promise=True)
+            got = run_prompt(payload)
+            check("кратность 8 — выход 1000×752 (стороны кратны 8)",
+                  got is not None and got.size == (1000, 752),
+                  None if got is None else got.size)
+
+            mult_off = await cdp.eval(SET_MULT_JS.replace("__MULT__", "0"))
+            await asyncio.sleep(0.4)
+            state = await cdp.eval(STATE_JS)
+            print(f"→ кратность снова 0: {state} (виджет {mult_off})")
+            params_check("кратность снова 0", state, 1001, 751)
+            payload = await cdp.eval(PROMPT_JS, await_promise=True)
+            identity("кратность снова 0 — выход", run_prompt(payload), src_odd, (1001, 751))
     finally:
         if not args.keep:
             chrome.terminate()

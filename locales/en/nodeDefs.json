@@ -45,7 +45,7 @@
       },
       "multiplicity": {
         "name": "Multiplicity",
-        "tooltip": "Round the output width and height to this step."
+        "tooltip": "Rounds the output width and height to this step. 0 = no rounding (default). Always applied: to the crop, to the source image and to the manual size."
       },
       "megapixels": {
         "name": "Megapixels",
