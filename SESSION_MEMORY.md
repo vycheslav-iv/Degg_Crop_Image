@@ -1,95 +1,65 @@
-# Память сессии — Degg_Crop_Image (2026-10-29)
+# SESSION_MEMORY.md — Degg_Crop_Image
 
-> Покажи этот файл агенту, чтобы продолжить работу.
-> Всегда сверяйся с `AGENTS.md` и `SPECIFICATION.md`.
+**Дата**: 2026-11-01  
+**Git HEAD**: `c020249` (ветка `master`, clean после синхронизации)
 
 ---
 
-## 1. Что делали в этой сессии (кратко)
+## Что сделано за сессию
 
-- **Жалоба:** «Кратность» действует только в режиме кропа. При загрузке файла и
-  кнопке «Сбросить» размер брался от картинки как есть (1001×751 при
-  кратности 8 уходил в выход 1001×751).
-- **Решение (согласовано с пользователем, вариант без BOOLEAN):** кратность
-  применяется ВСЕГДА — к кропу, к размеру картинки и к ручному размеру.
-  Новый дефолт/минимум `multiplicity = 0` (= без округления), диапазон `0…128`
-  шагом 4. Округление выводится в момент вывода, а не хранится в состоянии.
-- Красная фаза → правка → зелёная, коммит `b7983f4` и пуш в origin/master.
-- **Живая проба НЕ прогнана:** пользователь сам перезапустит ComfyUI позже
-  (шёл прогон, prompt `c36244e8`). После рестарта запустить пробу.
+### 1. Полный аудит ошибок (запрос пользователя)
 
-## 2. Итоговое состояние кода
+Найдены и исправлены **3 ошибки**:
 
-- `crop_image.py:107` `snap()` — `max(1, int(multiplicity))`, `0` → шаг 1.
-- `crop_image.py:134` `output_size()` — ручная ветка (`manual is not None`)
-  теперь проходит шаг: `max(step, py_round(width / step) * step)` по каждой
-  стороне. Докстринг переписан под новый контракт.
-- `crop_image.py:513` — `multiplicity` в `INPUT_TYPES`: `default 0`, `min 0`,
-  `max 128`, `step 4`, новый tooltip.
-- `crop_image.py:435/755` — дефолты `render_frames()` и `crop()` → `0`.
-- `crop_image.py:816` — пустой результат: `max(int(multiplicity), 1)` → 1×1 при `0`.
-- `web/js/crop_image.js:311` `outputSizeFor()` — ручная ветка: `pyRound` затем
-  `snapSize(base, multiplicity)`; обе ветки округляются.
-- `web/js/crop_image.js:934` `multiplicity()` — `Math.max(0, …)`, не `max(1…)`.
-- `web/js/crop_image.js:939` `resultSize()` — ручная ветка через `snapSize`.
-- `web/js/crop_image.js:1085` `setResultSize()` — хранит ЗАПРОШЕННЫЙ размер,
-  кадр подгоняет под ОКРУГЛЁННЫЙ (`snapSize(manual, multiplicity())`).
-- `web/js/crop_image.js` `dropStaleManual()` — сверка `ratiosMatch(state.frac,
-  resultSize(), …)`, а не `state.manual`.
-- `locales/ru|en/nodeDefs.json` — tooltip: «0 — без округления, применяется
-  всегда»; `README.md` §опции/формула, `SPECIFICATION.md` §3 (формула, ручной
-  режим, сброс), §7 (числа прогонов, описание пробы).
+| # | Ошибка | Файл | Статус |
+|---|--------|------|--------|
+| 1 | `nearest-exact` + `antialias=True` → ValueError в torch | `crop_image.py:220` | ✅ fixed |
+| 2 | `input_file_path` → `ValueError` на разных дисках Windows | `crop_image.py:327` | ✅ fixed |
+| 3 | `onConnectionsChange` жёстко `slot === 0` вместо поиска по имени | `web/js/crop_image.js:2158` | ✅ fixed |
 
-## 3. Проблемы, которые встречались (и как решали)
+Каждая ошибка имеет **красный замер** (FAIL до, PASS после) и **мутационную проверку** (сломанный код → снова FAIL).
 
-- **Старые тесты держали старый контракт** (`render_frames(..., 8, (37,29))`
-  ждал 37×29; Mask Editor гонял `multiplicity=8` на картинке 4×4 → 8×8).
-  По §2.3 правились ТЕСТЫ: identity-проверки и Paint-хелперы переведены на
-  `multiplicity=0`, добавлена проверка `37×29 + 8 → 40×32`.
-- **Детектор аудита хранил отпечаток старого выражения**
-  (`ratiosMatch(state.frac, state.manual, …)`) → переустановлен на `resultSize()`.
-- **Мутация `resultSize()` без `snapSize`** дала зелёный smoke (`ok: 110`):
-  смоук не видит замыкания ноды. Краснеет статический аудит — покрытие есть,
-  но слоем ниже; записано в SPEC.
-- **Хук commit-msg ложно блокировал** сообщение из-за упоминаний `check.py` и
-  `sync.py` (это команды, а не изменённые файлы) → переформулировал сообщение,
-  `--no-verify` не использовался.
-- **Проба падала с `NullGraphError`** (`__probeSetFile` держал узел, отсоединённый
-  `g.clear()` в `WIRE_JS`) → секция 5 заново вызывает `SETUP_JS` перед загрузкой.
-- **Интерпретатор:** проба запускается только
-  `/d/ComfyUI_windows_portable/python_embeded/python.exe` — в системном Python
-  нет `numpy`/`websockets`.
+### 2. Прогон проверок
 
-## 4. Что важно не сломать при продолжении работы
+| Проверка | Результат |
+|----------|-----------|
+| `tests/_test_crop_image.py` (песочница, 147 проверок) | ✅ PASS |
+| `tests/_smoke_crop_image.mjs` (JS-смоук) | ✅ PASS |
+| `tests/_audit_crop_image.mjs` (статический аудит) | ✅ PASS |
+| `tests/_probe_live_dom_crop_image.py` (142 проверки) | ✅ PASS |
+| `tests/_probe_live_reset_params.py` (51 проверка) | ✅ PASS |
+| `tests/_probe_live_workflow_switch.py` (19 проверок) | ✅ PASS |
+| `python _process/check.py Degg_Crop_Image` | ✅ ЗЕЛЁНОЕ: провалов 0 |
 
-- `multiplicity = 0` — дефолт; `0` НЕ значит «выключить проверку»: он значит
-  «шаг 1», и все формулы обязаны это переживать (`snapSize`, `snap`,
-  `computeOutputSize`).
-- `output_size` хранит **запрошенный** размер; округление — только при выводе.
-  Иначе снятие кратности оставляет «залипшее» округление.
-- Идентичность «полный кадр + ручной размер = размер источника» пиксель в
-  пиксель держится только при `multiplicity = 0`; при >0 растяжение <0.3 %
-  (1000/752 vs 1001/751 < `RATIO_TOLERANCE = 0.005`), поэтому
-  `dropStaleManual` не должен сверяться с неокруглённым `state.manual`.
-- Паритет Python ↔ JS: `pyRound` (банковское) и `max(step, …)` в обеих
-  реализациях; любая правка формулы — в двух файлах + тест паритета.
-- Тесты живут в `tests/`, `sync.py` их не копирует.
+### 3. Синхронизация
 
-## 5. Следующие шаги (не сделано)
+`python ../sync.py Degg_Crop_Image` — 6 файлов синхронизированы, рабочая копия в `D:\ComfyUI_windows_portable\ComfyUI\custom_nodes\Degg_Crop_Image\` побайтово идентична исходнику.
 
-- **Перезапустить ComfyUI** и прогнать живую пробу:
-  `/d/ComfyUI_windows_portable/python_embeded/python.exe tests/_probe_live_reset_params.py`
-  (до правки было `КРАСНОЕ: провалов 4, ок 47`; ждём `0`).
-- После зелёной пробы — записать в SPEC/README фактический вывод пробы.
-- При желании: связать кратность с пресетами разрешения (сейчас `0` по
-  умолчанию не даёт «ровных» 1088/1928 автоматически).
+---
 
-## 6. Связанные файлы
+## Состояние кода (важно не сломать)
 
-- `F:/AI_projects/Custom_node_ComfyUI/Degg_Crop_Image/crop_image.py`
-- `F:/AI_projects/Custom_node_ComfyUI/Degg_Crop_Image/web/js/crop_image.js`
-- `tests/_test_crop_image.py`, `tests/_smoke_crop_image.mjs`,
-  `tests/_audit_crop_image.mjs`, `tests/_probe_live_reset_params.py`
-- `locales/ru/nodeDefs.json`, `locales/en/nodeDefs.json`
-- `README.md`, `SPECIFICATION.md`, `AGENTS.md` (процедура §2.2/§2.3)
-- Рабочая копия: `D:/ComfyUI_windows_portable/ComfyUI/custom_nodes/Degg_Crop_Image`
+- **Python `INPUT_TYPES`**: `image` — опциональный сокет (индекс 0, потому что нет required сокетов). Порядок: `megapixels`, `multiplicity`, `resample`, `fill`, `dim_outside` (required виджеты), затем опциональные сокеты `image`, `image_file`, `mask_file`, `mask`, `crop_rect`, `output_size`, UI-виджеты.
+- **Кратность `multiplicity`**: дефолт `0` = «без округления», диапазон `0..128` step 4. Живая проба явно ставит `8` для проверки паритета с ResolutionSelector.
+- **`output_size`** хранит **запрошенный** ручной размер (без кратности); кратность применяется в `output_size()` и в `resultSize()` — одинаково для ручного и MP-режима.
+- **`resample`** значения протокольные (EN): `lanczos,bicubic,bilinear,nearest-exact` — не переводятся.
+- **JS `imageSlotIndex`** ищет сокет `image` по имени; `onConnectionsChange` использует его индекс.
+- **Mask Editor**: штатный ComfyUI Mask Editor открывается через `node.imgs = [img]`; файл редактора кладёт результат в скрытый виджет `image`; `syncMaskEditorSource` переносит в `mask_file`; `painted_matches_source` (сервер) / `paintedMatchesSource` (JS) сравнивают по медиане разницы ≤ 0.08.
+- **Локализация**: Python — EN-источник; `locales/ru/nodeDefs.json` для RU; смена языка на лету через `Comfy.Locale.change`.
+
+---
+
+## Что НЕ трогали / известные риски
+
+- `painted_mask` применяется даже если `painted_image` не совпал с wired source — поведение JS и Python согласовано (оба показывают старую маску), менять только по явному требованию.
+- `setFileValue` / `persistState` пишут `widget.value` напрямую — в текущем фронтенде (0.43) сериализация работает, живые пробы промпта зелёные.
+- `parse_output_size` использует `int(round(...))` — banker's rounding; JS `Math.round` — может расходиться на .5, но UI пишет целые.
+- `clampFrac` в JS (`1e-4`) vs Python `MIN_FRACTION` (`1e-6`) — мелкое расхождение, не влияет на работу.
+
+---
+
+## Планы / 다음 шаги
+
+- Пользователь не просил коммитить — изменения в рабочей копии, коммит по запросу.
+- После перезапуска ComfyUI пользователем — живые пробы пройдут с новым Python-кодом.
+- Дополнительный аудит на фронтенде (sizing, layout) не выявил новых ошибок — статический аудит чист.

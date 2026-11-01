@@ -220,8 +220,15 @@ def _resize(tensor, width: int, height: int, method: str):
     if method == "lanczos" and _common_upscale is not None:
         out = _common_upscale(chw, width, height, "lanczos", "disabled")
     else:
-        mode = "nearest-exact" if method == "nearest-exact" else method
-        out = F.interpolate(chw, size=(height, width), mode=mode, antialias=True)
+        mode = method
+        # torch запрещает antialias для nearest-exact (и требует его для
+        # lanczos): с antialias=True выбор «nearest-exact» падал ValueError.
+        out = F.interpolate(
+            chw,
+            size=(height, width),
+            mode=mode,
+            antialias=mode in ("bilinear", "bicubic", "lanczos"),
+        )
     return out[0].permute(1, 2, 0)
 
 
@@ -314,7 +321,13 @@ def input_file_path(name: str):
         path = os.path.realpath(candidate)
     except Exception:
         return None
-    if os.path.commonpath([base, path]) != base or path == base:
+    try:
+        # Другой диск на Windows -> ValueError: у путей нет общего префикса.
+        # Это вход из старого воркфлоу (абсолютный путь), а не сбой ноды.
+        inside = os.path.commonpath([base, path]) == base
+    except ValueError:
+        return None
+    if not inside or path == base:
         return None
     if not path.lower().endswith(IMAGE_EXTENSIONS):
         return None

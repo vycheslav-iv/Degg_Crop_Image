@@ -851,6 +851,15 @@ async def main() -> int:
                 and abs(reset_frac.get("w", 0) - 1) < 1e-6 and abs(reset_frac.get("h", 0) - 1) < 1e-6,
                 reset_frac,
             )
+            # Кратность по умолчанию 0 = «без округления» (SPEC:38). Все
+            # сценарии ниже сверяют округлённые размеры, поэтому кратность
+            # задаётся явно — иначе ожидания описывают прежний дефолт 8.
+            await cdp.eval(
+                "(() => { const n = window.__probeCrop;"
+                " const k = n.widgets.find((w) => w.name === 'multiplicity');"
+                " k.value = 8; k.callback && k.callback(8, app.canvas, n); return k.value; })()"
+            )
+            await asyncio.sleep(0.2)
             # Дальше — режим «по мегапикселям»: ставим 2.0 явно.
             await cdp.eval(
                 "(() => { const n = window.__probeCrop; const m = n.widgets.find((w) => w.name === 'megapixels');"
@@ -1825,8 +1834,8 @@ async def main() -> int:
                 " const o = (w && w.options) || {}; return [o.min, o.max, o.step2]; })()"
             )
             check(
-                "кратность 8..128 шагом 4 (как в «Выборе разрешения»)",
-                mult_opts == [8, 128, 4],
+                "кратность 0..128 шагом 4 (0 = без округления)",
+                mult_opts == [0, 128, 4],
                 mult_opts,
             )
 

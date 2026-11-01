@@ -360,7 +360,10 @@ def identity(label: str, got, source, expect_size) -> None:
           None if same else f"различается пикселей: {diff}")
 
 
-def params_check(label: str, state: dict, w: int, h: int) -> None:
+def params_check(label: str, state: dict, w: int, h: int, manual=None) -> None:
+    """`w,h` — ИТОГОВЫЙ размер (кадр, бейдж); `manual` — что лежит в скрытом
+    `output_size`. Спека (§9.2): там ЗАПРОШЕННЫЙ размер, кратность применяется
+    при выводе, поэтому при multiplicity>0 эти числа расходятся."""
     rect = {}
     try:
         rect = json.loads(state.get("crop_rect") or "{}")
@@ -370,7 +373,8 @@ def params_check(label: str, state: dict, w: int, h: int) -> None:
           all(abs(float(rect.get(k, -1)) - v) < 1e-6 for k, v in
               (("x", 0.0), ("y", 0.0), ("w", 1.0), ("h", 1.0))), state.get("crop_rect"))
     size = str(state.get("output_size") or "")
-    check(f"{label}: размер результата = {w},{h}", size == f"{w},{h}", size)
+    want_manual = f"{w},{h}" if manual is None else f"{manual[0]},{manual[1]}"
+    check(f"{label}: output_size = {want_manual}", size == want_manual, size)
     mp = state.get("megapixels")
     want_mp = (w * h) / (1024.0 * 1024.0)
     check(f"{label}: мегапиксели = площадь источника ({want_mp:.4f})",
@@ -525,7 +529,7 @@ async def main() -> int:
             state = await cdp.eval(STATE_JS)
             print(f"→ кратность 8: {state}")
             check("кратность 8 принята виджетом", mult8 == 8, mult8)
-            params_check("кратность 8", state, 1000, 752)
+            params_check("кратность 8", state, 1000, 752, manual=(1001, 751))
             payload = await cdp.eval(PROMPT_JS, await_promise=True)
             got = run_prompt(payload)
             check("кратность 8 — выход 1000×752 (стороны кратны 8)",

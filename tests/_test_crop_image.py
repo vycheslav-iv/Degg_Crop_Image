@@ -221,7 +221,19 @@ def _cat(tensors, dim=0):
 
 
 def _interpolate(x, size, mode="nearest", antialias=False):
-    """Nearest-neighbour resample of the last two dims (shape is what matters)."""
+    """Nearest-neighbour resample of the last two dims (shape is what matters).
+
+    Ограничения настоящего torch воспроизводятся: antialias разрешён ТОЛЬКО
+    для bilinear/bicubic/lanczos, а lanczos без него падает. Без этого
+    заглушка подтверждала бы несуществующий успех (skill: приёмка тестов
+    мутацией) — нода передаёт antialias=True всегда.
+    """
+    if antialias and mode not in ("bilinear", "bicubic", "lanczos"):
+        raise ValueError(
+            "Anti-alias option is restricted to bilinear, bicubic, and lanczos modes"
+        )
+    if mode == "lanczos" and not antialias:
+        raise ValueError("Lanczos mode requires antialias=True")
     out_h, out_w = (int(v) for v in size)
     lead = x.shape[:-2]
     in_h, in_w = x.shape[-2:]
@@ -519,9 +531,21 @@ check("batch output batch=2", out.shape == (2, 10, 10, 4), out.shape)
 check("batch frame 0 value", close(out[0, 1, 1, 0], 110.0), out[0, 1, 1, 0])
 check("batch frame 1 value", close(out[1, 1, 1, 0], 10110.0), out[1, 1, 1, 0])
 
-# Nearest-exact path also works through the stub.
-out, mask, w, h = mod.render_frames(make_image(1, 10, 10), None, half, "transparent", "nearest-exact", 0.000025, 1)
-check("nearest-exact path", out.shape == (1, 10, 10, 4) and close(out[0, 0, 0, 0], 550.0), out.shape)
+# Nearest-exact — РАБОЧИЙ выбор в комбо (как в LoadImage). torch запрещает
+# ему antialias, а нода передавала antialias=True всегда: выбор ронял ноду
+# ValueError. Проверка ловит именно это (не только форму результата).
+try:
+    out, mask, w, h = mod.render_frames(
+        make_image(1, 10, 10), None, half, "transparent", "nearest-exact", 0.000025, 1
+    )
+    _ne_err = ""
+except Exception as exc:
+    out, w, h, _ne_err = None, 0, 0, f"{type(exc).__name__}: {exc}"
+check(
+    "nearest-exact: ресайз не падает (antialias только для сглаживающих режимов)",
+    out is not None and out.shape == (1, 10, 10, 4) and close(out[0, 0, 0, 0], 550.0),
+    _ne_err or (None if out is None else out.shape),
+)
 
 # Batch masks: each frame must take its OWN mask frame, not the first one.
 # Маска ComfyUI: 1 = убрать, поэтому видимая альфа = 1 - маска.
@@ -1097,6 +1121,33 @@ check(
     "path traversal: абсолютный путь вне input отклонён",
     _abs_img is None,
     _abs_out if _abs_img is not None else "",
+)
+
+# Другой диск: у путей нет общего префикса, и os.path.commonpath бросает
+# ValueError. Это вход из СТАРОГО воркфлоу (абсолютный путь), а не ошибка
+# пользователя: нода обязана вернуть None, как для любого пути вне input.
+_drive = os.path.splitdrive(str(_IO_INPUT))[0].upper()
+_other = ("D:" if _drive != "D:" else "C:") + "/__degg_probe__/ok.png"
+_same_missing = str(_IO_INPUT / "нет-такого.png")
+try:
+    _same_res = mod.input_file_path(_same_missing)
+    _same_err = ""
+except Exception as exc:
+    _same_res, _same_err = None, f"{type(exc).__name__}: {exc}"
+check(
+    "несуществующий файл на ТОМ ЖЕ диске -> None, без исключения",
+    _same_res is None and not _same_err,
+    _same_err or _same_missing,
+)
+try:
+    _cross_res = mod.input_file_path(_other)
+    _cross_err = ""
+except Exception as exc:
+    _cross_res, _cross_err = None, f"{type(exc).__name__}: {exc}"
+check(
+    "абсолютный путь на ДРУГОМ диске -> None, без исключения",
+    _cross_res is None and not _cross_err,
+    _cross_err or _other,
 )
 
 _abs_in = str(_IO_INPUT / "ok.png")

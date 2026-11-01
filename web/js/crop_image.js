@@ -654,9 +654,9 @@ function widgetByName(node, name) {
 /**
  * Индекс входного сокета «image».
  *
- * Сокет image — НЕОБЯЗАТЕЛЬНЫЙ (нода умеет работать с файлом из input без
- * подключения), поэтому он НЕ первый во входах: обязательные входы идут
- * первыми. Искать upstream по индексу 0 нельзя — только по имени.
+ * Сокет image — НЕОБЯЗАТЕЛЬНЫЙ. В текущей сборке он имеет индекс 0, потому что
+ * обязательных сокетов нет (все required — виджеты). Искать upstream по имени
+ * через imageSlotIndex — надёжно на случай смены порядка.
  */
 function imageSlotIndex(node) {
   const inputs = node.inputs || [];
@@ -1411,8 +1411,12 @@ function createEditor(node, widget) {
     const { key, url } = previewFor(node);
     const nextKey = url ? key : '';
     if (!force && nextKey === state.key) {
-      // Картинка уже показана — грузить нечего, значит и восстановление завершено.
-      state.restoring = false;
+      // Грузить нечего. Восстановление завершено только если ЭТА картинка уже
+      // показана: пока она грузится (imageKey ≠ key), флаг обязан дожить до
+      // onload — иначе рамка из воркфлоу затирается «новой картинкой»
+      // (переключение воркфлоу: refresh() приходит между стартом загрузки и
+      // onload и снимал флаг).
+      if (state.imageKey === state.key) state.restoring = false;
       return;
     }
     state.key = nextKey;
@@ -2151,7 +2155,8 @@ function createEditor(node, widget) {
   node.onConnectionsChange = function (type, slot, connected, link, slotType) {
     const result = connections?.apply(this, arguments);
     const isInput = type === (window.LiteGraph?.INPUT ?? 1);
-    if (isInput && Number(slot) === 0) {
+    const imageIdx = imageSlotIndex(node);
+    if (isInput && Number(slot) === imageIdx) {
       requestAnimationFrame(() => {
         noteSourceKind();
         watchSource();
