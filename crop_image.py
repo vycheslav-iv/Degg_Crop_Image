@@ -42,6 +42,8 @@ FILL_MODES = ["transparent", "black", "white", "gray"]
 DEFAULT_RECT = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 MIN_FRACTION = 1e-6
 MAX_FRACTION = 100.0
+#: Smallest frame side kept by the ratio helper (parity with MIN_RATIO_PX in JS).
+MIN_RATIO_PX = 8.0
 
 #: Surfaces config below keeps the transport widget out of every renderer:
 #: the frame is edited by the DOM editor, the JSON string is written by JS.
@@ -127,6 +129,119 @@ def parse_output_size(raw: str) -> tuple[int, int] | None:
     return width, height
 
 
+def _clamp_rect(rect: dict) -> dict:
+    """Clamp a normalized rect (parity with ``clampFrac`` in the JS editor)."""
+    out = {
+        "x": float(rect["x"]),
+        "y": float(rect["y"]),
+        "w": float(rect["w"]),
+        "h": float(rect["h"]),
+    }
+    out["x"] = min(max(out["x"], -MAX_FRACTION), MAX_FRACTION)
+    out["y"] = min(max(out["y"], -MAX_FRACTION), MAX_FRACTION)
+    if out["w"] <= MIN_FRACTION or out["h"] <= MIN_FRACTION:
+        return dict(DEFAULT_RECT)
+    return out
+
+
+def frame_with_ratio(
+    rect: dict, src_w: int, src_h: int, ratio: float, min_px: float = MIN_RATIO_PX
+) -> dict:
+    """Reshape the frame to ``ratio`` keeping its centre and area (JS parity)."""
+    w0 = float(rect["w"]) * max(int(src_w), 1)
+    h0 = float(rect["h"]) * max(int(src_h), 1)
+    if not (src_w > 0 and src_h > 0 and w0 > 0 and h0 > 0 and ratio > 0):
+        return dict(rect)
+    area = max(w0 * h0, min_px * min_px)
+    width = math.sqrt(area * ratio)
+    height = width / ratio
+    if width < min_px:
+        width = min_px
+        height = width / ratio
+    if height < min_px:
+        height = min_px
+        width = height * ratio
+    cx = float(rect["x"]) * src_w + w0 / 2.0
+    cy = float(rect["y"]) * src_h + h0 / 2.0
+    return _clamp_rect(
+        {
+            "x": (cx - width / 2.0) / src_w,
+            "y": (cy - height / 2.0) / src_h,
+            "w": width / src_w,
+            "h": height / src_h,
+        }
+    )
+
+
+def move_frame_to_offset(
+    rect: dict, src_w: int, src_h: int, offset_x=None, offset_y=None
+) -> dict:
+    """Move the frame centre to image centre + offset, keeping its size.
+
+    ``None`` on an axis keeps that axis' current position (the editor mirror
+    must not be applied when only the other axis arrived by a wire).
+    """
+    width = float(rect["w"])
+    height = float(rect["h"])
+    src_w = max(int(src_w), 1)
+    src_h = max(int(src_h), 1)
+    if not (width > 0 and height > 0):
+        return dict(rect)
+    cur_cx = (float(rect["x"]) + width / 2.0) * src_w
+    cur_cy = (float(rect["y"]) + height / 2.0) * src_h
+    cx = cur_cx if offset_x is None else src_w / 2.0 + float(offset_x)
+    cy = cur_cy if offset_y is None else src_h / 2.0 + float(offset_y)
+    return _clamp_rect(
+        {
+            "x": (cx - width * src_w / 2.0) / src_w,
+            "y": (cy - height * src_h / 2.0) / src_h,
+            "w": width,
+            "h": height,
+        }
+    )
+
+
+def linked_inputs(prompt, unique_id) -> set:
+    """Input names supplied by a WIRE in this prompt (a link is ``[id, slot]``).
+
+    The editor mirrors ``frame_w``/``frame_h``/``center_x``/``center_y`` into
+    widgets, so a literal there may be just a display copy. Only a real link
+    proves the value was given to the node as an input.
+    """
+    if not isinstance(prompt, dict) or unique_id is None:
+        return set()
+    node = prompt.get(str(unique_id))
+    if not isinstance(node, dict):
+        return set()
+    inputs = node.get("inputs")
+    if not isinstance(inputs, dict):
+        return set()
+    return {
+        name
+        for name, value in inputs.items()
+        if isinstance(value, list) and len(value) == 2
+    }
+
+
+def _wired_sockets(rest) -> set:
+    """Input names whose value is a WIRE at validation/cache time.
+
+    Two independent proofs, because validation runs before execution:
+
+    * ``linked_inputs`` sees the literal ``[node_id, slot]`` in the prompt;
+    * the engine resolves a link to ``None`` while validating (no outputs are
+      cached yet), and such a name still arrives in the kwargs.
+
+    A *string* is NOT a wire: old workflows carried the Mask Editor widget
+    value in the socket named ``image``, and that file is really used.
+    """
+    wired = linked_inputs(rest.get("prompt"), rest.get("unique_id"))
+    for socket in ("image", "mask"):
+        if socket in rest and not isinstance(rest.get(socket), str):
+            wired.add(socket)
+    return wired
+
+
 def output_size(
     rect_w: float,
     rect_h: float,
@@ -168,6 +283,74 @@ def output_size(
     width = max(step, py_round(base_w / step) * step)
     height = max(step, py_round(base_h / step) * step)
     return int(width), int(height)
+
+
+def resolve_crop_rect(
+    rect: dict,
+    src_w: int,
+    src_h: int,
+    *,
+    prompt=None,
+    unique_id=None,
+    center_x=0,
+    center_y=0,
+    frame_w=0,
+    frame_h=0,
+    output_size_raw="",
+    megapixels=2.0,
+    multiplicity=0,
+) -> tuple[dict, tuple[int, int] | None]:
+    """Turn the node INPUT values into the frame and the result size actually used.
+
+    The frame itself lives in the stored ``crop_rect``; these inputs describe it
+    (the editor writes them as mirrors, users and API scripts can drive them).
+    Parity with the JS editor:
+
+    * ``frame_w``/``frame_h`` set the result size and the frame follows it
+      (area and centre kept) — like ``setResultSize``;
+    * the ratio drop-down is a display setting: its value cannot be read here
+      (a combo), so frame proportions change only through size or the editor;
+    * centre offsets move the frame keeping its size, and only when they came
+      by a wire: the editor also writes those widgets, and ``center_x=0`` from
+      an API prompt must not silently recentre a hand-placed frame.
+
+    Drop-down fields (``aspect_ratio``, ``fill``, ``resample``) are display
+    settings and are deliberately NOT applied here.
+    """
+    rect = dict(rect)
+    src_w = max(int(src_w), 1)
+    src_h = max(int(src_h), 1)
+    linked = linked_inputs(prompt, unique_id)
+
+    manual = parse_output_size(output_size_raw)
+    fw = max(int(frame_w or 0), 0)
+    fh = max(int(frame_h or 0), 0)
+
+    if fw or fh:
+        rect_px_w = max(float(rect["w"]) * src_w, MIN_FRACTION)
+        rect_px_h = max(float(rect["h"]) * src_h, MIN_FRACTION)
+        if fw and fh:
+            manual = (fw, fh)
+        elif fw:
+            manual = (fw, max(1, py_round(fw * rect_px_h / rect_px_w)))
+        else:
+            manual = (max(1, py_round(fh * rect_px_w / rect_px_h)), fh)
+        out_w, out_h = output_size(
+            rect_px_w, rect_px_h, megapixels, multiplicity, manual
+        )
+        manual = (out_w, out_h)
+        rect = frame_with_ratio(rect, src_w, src_h, out_w / out_h)
+
+    if linked & {"center_x", "center_y"}:
+        rect = move_frame_to_offset(
+            rect,
+            src_w,
+            src_h,
+            int(center_x) if "center_x" in linked else None,
+            int(center_y) if "center_y" in linked else None,
+        )
+
+    return rect, manual
 
 
 def frame_geometry(
@@ -220,14 +403,16 @@ def _resize(tensor, width: int, height: int, method: str):
     if method == "lanczos" and _common_upscale is not None:
         out = _common_upscale(chw, width, height, "lanczos", "disabled")
     else:
-        mode = method
-        # torch запрещает antialias для nearest-exact (и требует его для
-        # lanczos): с antialias=True выбор «nearest-exact» падал ValueError.
+        # F.interpolate режима "lanczos" НЕ знает (он живёт только в
+        # comfy.utils.common_upscale): без него откатываемся на bicubic,
+        # иначе ValueError на каждом кадре. torch запрещает antialias для
+        # nearest-exact (и требует его для bilinear/bicubic).
+        mode = "bicubic" if method == "lanczos" else method
         out = F.interpolate(
             chw,
             size=(height, width),
             mode=mode,
-            antialias=mode in ("bilinear", "bicubic", "lanczos"),
+            antialias=mode in ("bilinear", "bicubic"),
         )
     return out[0].permute(1, 2, 0)
 
@@ -303,6 +488,12 @@ def input_file_path(name: str):
     ``startswith``: a string prefix would accept ``../secret.png`` and a
     sibling ``input2`` folder. An absolute path is allowed only when it really
     lies inside the input folder (older workflows stored it that way).
+
+    A bare name is also looked up in ``input/clipspace/``: frontends before the
+    unified upload contract wrote the Mask Editor file there and put only its
+    name in the widget, so without this fallback the painted layer is silently
+    lost. A name WITH a subfolder is already the new layout and is not searched
+    there, so the input root always wins.
     """
     text = _strip_annotation(name)
     if not text:
@@ -316,8 +507,20 @@ def input_file_path(name: str):
     except Exception:
         return None
     text = text.replace("\\", "/")
-    candidate = text if os.path.isabs(text) else os.path.join(base, text)
+    found = _input_path_checked(base, text)
+    if found is not None:
+        return found
+    if os.path.isabs(text) or os.path.basename(text) != text:
+        return None
+    return _input_path_checked(base, os.path.join("clipspace", text))
+
+
+def _input_path_checked(base: str, relative: str):
+    """``relative`` resolved inside ``base`` (realpath containment) or ``None``."""
     try:
+        import os
+
+        candidate = relative if os.path.isabs(relative) else os.path.join(base, relative)
         path = os.path.realpath(candidate)
     except Exception:
         return None
@@ -463,13 +666,21 @@ def render_frames(
     channels = 4 if has_alpha else 3
 
     color = _fill_color(fill, channels)
-    canvas = torch.zeros((batch, out_h, out_w, channels), dtype=torch.float32)
+    # Канва живёт на устройстве источника: в ComfyUI картинка после сэмплера
+    # уже на cuda, а zeros() по умолчанию cpu — присваивание кадра тогда
+    # делало бы тихую копию через PCIe на каждый кадр.
+    device = getattr(image, "device", None)
+    canvas = torch.zeros(
+        (batch, out_h, out_w, channels), dtype=torch.float32, device=device
+    )
     # Канва заливается ЦВЕТОМ всегда, в том числе для 'transparent': у прозрачной
     # заливки RGB = серый (0.5), альфа = 0. Раньше там были нули, и превью без
     # альфы показывало аутпейнт ЧЁРНЫМ.
-    canvas[...] = torch.tensor(color)
+    canvas[...] = torch.tensor(color, device=device)
 
-    mask_out = torch.zeros((batch, out_h, out_w), dtype=torch.float32)
+    mask_out = torch.zeros(
+        (batch, out_h, out_w), dtype=torch.float32, device=device
+    )
     if fill != "transparent":
         mask_out[...] = 1.0
 
@@ -484,17 +695,33 @@ def render_frames(
 
         patch = frame[iy0:iy1, ix0:ix1, :]
         if mask is not None:
-            # Маска ComfyUI: 1 = убрать. Видимая альфа = 1 - маска.
+            # Маска ComfyUI: 1 = убрать. Видимая альфа = 1 - маска. Маска идёт
+            # с LoadImage с cpu (и float32), картинка может быть cuda/fp16:
+            # torch.cat ничего не приводит, поэтому приводим явно.
             alpha = _mask_alpha(
                 mask, index, src_h, src_w, iy0, iy1, ix0, ix1
             )
-            patch = torch.cat([patch[..., :3], alpha[..., None]], dim=-1)
+            patch = torch.cat(
+                [
+                    patch[..., :3],
+                    alpha[..., None].to(dtype=patch.dtype, device=patch.device),
+                ],
+                dim=-1,
+            )
         elif channels == 4:
             if int(patch.shape[-1]) >= 4:
                 patch = patch[..., :4]
             else:
                 patch = torch.cat(
-                    [patch[..., :3], torch.ones((iy1 - iy0, ix1 - ix0, 1))], dim=-1
+                    [
+                        patch[..., :3],
+                        torch.ones(
+                            (iy1 - iy0, ix1 - ix0, 1),
+                            dtype=patch.dtype,
+                            device=patch.device,
+                        ),
+                    ],
+                    dim=-1,
                 )
 
         patch = _resize(patch, dx1 - dx0, dy1 - dy0, resample)
@@ -520,7 +747,7 @@ class DeggCropImage:
                         "min": 0.1,
                         "max": 64.0,
                         "step": 0.1,
-                        "tooltip": "Target output area in megapixels (1 MP = 1,000,000 px).",
+                        "tooltip": "Target output area in megapixels (1 MP = 1024 x 1024 px).",
                     },
                 ),
                 "multiplicity": (
@@ -701,6 +928,13 @@ class DeggCropImage:
                     },
                 ),
             },
+            # Prompt and node id are needed to tell a value supplied by a WIRE
+            # from the editor's display copy of the same field (see
+            # resolve_crop_rect).
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
+            },
         }
 
     RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT")
@@ -724,8 +958,15 @@ class DeggCropImage:
 
         LoadImage behaves the same way. An empty value is legal: the source may
         arrive over a wire while the file widget stays empty.
+
+        A wired socket replaces its file widget completely, so a stale file
+        left in the widget must not fail validation: the node never opens it
+        (a workflow stays usable after the file is renamed or removed).
         """
-        for name in (image_file, mask_file):
+        wired = _wired_sockets(rest)
+        for name, socket in ((image_file, "image"), (mask_file, "mask")):
+            if socket in wired:
+                continue
             text = _strip_annotation(name) if name else ""
             if text and input_file_path(text) is None:
                 return f"Invalid file (missing or outside the input folder): {text}"
@@ -737,10 +978,14 @@ class DeggCropImage:
 
         Without files (source over a wire) the stamp is constant: the upstream
         hash is responsible for the picture, so there is no reason to break the
-        cache.
+        cache. A file behind a wired socket is not read at all, so its re-upload
+        must not invalidate the node either.
         """
+        wired = _wired_sockets(rest)
         parts = []
-        for name in (image_file, mask_file):
+        for name, socket in ((image_file, "image"), (mask_file, "mask")):
+            if socket in wired:
+                continue
             path = input_file_path(name) if name else None
             if path is None:
                 continue
@@ -774,6 +1019,8 @@ class DeggCropImage:
         golden_ratio=False,  # только отображение (сетка в превью), сервер не читает
         snap_edges=True,  # только отображение (магнит краёв), сервер не читает
         mask=None,
+        prompt=None,
+        unique_id=None,
     ):
         # Источник: подключённый сокет главный; иначе — файл из input
         # (и его альфа становится маской, как в LoadImage).
@@ -812,9 +1059,17 @@ class DeggCropImage:
             # прошлого источника. В батче красим первый кадр — редактор
             # открывался по нему.
             if int(image.shape[0]) == 1:
-                image = painted_image
+                image = painted_image.to(device=image.device, dtype=image.dtype)
             else:
-                image = torch.cat([painted_image, image[1:]], dim=0)
+                # Файл редактора читается с cpu/float32, батч может быть на
+                # cuda: torch.cat устройства и dtype не приводит.
+                image = torch.cat(
+                    [
+                        painted_image.to(device=image.device, dtype=image.dtype),
+                        image[1:],
+                    ],
+                    dim=0,
+                )
         # Маска: явный вход важнее файла с нарисованной маской, тот важнее
         # альфы исходного файла.
         if mask is None:
@@ -833,6 +1088,24 @@ class DeggCropImage:
         method = resample if resample in RESAMPLE_METHODS else "lanczos"
         fill_mode = fill if fill in FILL_MODES else "transparent"
 
+        # Значения входов describe the frame; the frame itself is crop_rect.
+        # Wired centre offsets, frame size and the ratio preset are applied
+        # here, once the source size is known (see resolve_crop_rect).
+        rect, manual = resolve_crop_rect(
+            rect,
+            int(image.shape[2]),
+            int(image.shape[1]),
+            prompt=prompt,
+            unique_id=unique_id,
+            center_x=center_x,
+            center_y=center_y,
+            frame_w=frame_w,
+            frame_h=frame_h,
+            output_size_raw=output_size,
+            megapixels=megapixels,
+            multiplicity=multiplicity,
+        )
+
         out, out_mask, width, height = render_frames(
             image,
             mask,
@@ -841,7 +1114,7 @@ class DeggCropImage:
             method,
             float(megapixels),
             int(multiplicity),
-            parse_output_size(output_size),
+            manual,
         )
         return (out, out_mask, int(width), int(height))
 

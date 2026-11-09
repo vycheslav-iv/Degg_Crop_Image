@@ -49,7 +49,7 @@
       },
       "megapixels": {
         "name": "Megapixels",
-        "tooltip": "Output area budget in megapixels (1 MP = 1,000,000 px)."
+        "tooltip": "Output area budget in megapixels (1 MP = 1024 x 1024 px)."
       },
       "resample": {
         "name": "Resampling",

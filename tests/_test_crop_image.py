@@ -47,10 +47,16 @@ def _prod(values):
     return total
 
 
+def _dtype_name(dtype):
+    """torch.dtype -> имя для заглушки (в заглушке типы — строки)."""
+    name = getattr(dtype, "name", None) or str(dtype)
+    return name
+
+
 class T:
     """Flat, row-major tensor with torch-compatible basic indexing."""
 
-    def __init__(self, shape, data=None, fill=0.0):
+    def __init__(self, shape, data=None, fill=0.0, device="cpu", dtype="float32"):
         self.shape = tuple(int(s) for s in shape)
         if any(s < 0 for s in self.shape):
             raise ValueError(f"negative shape {self.shape}")
@@ -61,9 +67,32 @@ class T:
             self.data = list(data)
             if len(self.data) != size:
                 raise ValueError(f"data {len(self.data)} != shape {self.shape}")
+        # Устройство/тип нужны, чтобы ловить смешение CPU и GPU ровно так же,
+        # как настоящий torch (нода обязана приводить тензоры сама).
+        self.device = device
+        self.dtype = dtype
 
     def dim(self):
         return len(self.shape)
+
+    def to(self, device=None, dtype=None):
+        if device is not None and not isinstance(device, str):
+            raise TypeError(f"unsupported device {device!r}")
+        return T(
+            self.shape,
+            self.data,
+            device=self.device if device is None else device,
+            dtype=_dtype_name(self.dtype if dtype is None else dtype),
+        )
+
+    def detach(self):
+        return self
+
+    def float(self):
+        return T(self.shape, self.data, device=self.device, dtype="float32")
+
+    def cpu(self):
+        return T(self.shape, self.data, device="cpu", dtype=self.dtype)
 
     def _strides(self):
         strides = [1] * len(self.shape)
@@ -123,7 +152,7 @@ class T:
         flat, shape = self._selection(key)
         if not shape:
             return self.data[flat[0]]
-        return T(shape, [self.data[i] for i in flat])
+        return T(shape, [self.data[i] for i in flat], device=self.device, dtype=self.dtype)
 
     def __setitem__(self, key, value):
         flat, shape = self._selection(key)
@@ -150,19 +179,19 @@ class T:
             for out_axis, src_axis in enumerate(dims):
                 src[src_axis] = coord[out_axis]
             data.append(self.data[sum(c * s for c, s in zip(src, strides))])
-        return T(new_shape, data)
+        return T(new_shape, data, device=self.device, dtype=self.dtype)
 
     def __sub__(self, other):
         if isinstance(other, (int, float)):
-            return T(self.shape, [v - float(other) for v in self.data])
+            return T(self.shape, [v - float(other) for v in self.data], device=self.device, dtype=self.dtype)
         if isinstance(other, T):
             other_data = _broadcast(other, self.shape)
-            return T(self.shape, [a - b for a, b in zip(self.data, other_data)])
+            return T(self.shape, [a - b for a, b in zip(self.data, other_data)], device=self.device, dtype=self.dtype)
         raise TypeError(f"unsupported operand {type(other)}")
 
     def __rsub__(self, other):
         if isinstance(other, (int, float)):
-            return T(self.shape, [float(other) - v for v in self.data])
+            return T(self.shape, [float(other) - v for v in self.data], device=self.device, dtype=self.dtype)
         raise TypeError(f"unsupported operand {type(other)}")
 
     def __repr__(self):
@@ -181,21 +210,49 @@ def _broadcast(value, shape):
         return list(value.data) * reps
     raise ValueError(f"cannot broadcast {value.shape} to {shape}")
 
-def _zeros(shape, dtype=None):
-    return T(shape, fill=0.0)
+def _zeros(shape, dtype=None, device=None):
+    return T(
+        shape,
+        fill=0.0,
+        device="cpu" if device is None else device,
+        dtype="float32" if dtype is None else _dtype_name(dtype),
+    )
 
 
-def _ones(shape, dtype=None):
-    return T(shape, fill=1.0)
+def _ones(shape, dtype=None, device=None):
+    return T(
+        shape,
+        fill=1.0,
+        device="cpu" if device is None else device,
+        dtype="float32" if dtype is None else _dtype_name(dtype),
+    )
 
 
-def _tensor(values):
+def _tensor(values, dtype=None, device=None):
     values = list(values)
-    return T((len(values),), [float(v) for v in values])
+    return T(
+        (len(values),),
+        [float(v) for v in values],
+        device="cpu" if device is None else str(device),
+        dtype="float32" if dtype is None else _dtype_name(dtype),
+    )
 
 
 def _cat(tensors, dim=0):
     tensors = list(tensors)
+    # Настоящий torch требует одинаковое устройство и тип у всех участников
+    # (иначе RuntimeError) — иначе заглушка подтверждала бы несуществующий успех.
+    device = tensors[0].device
+    dtype = tensors[0].dtype
+    for t in tensors:
+        if t.device != device:
+            raise RuntimeError(
+                f"Expected all tensors to be on the same device, but found at least two devices, {device} and {t.device}!"
+            )
+        if t.dtype != dtype:
+            raise RuntimeError(
+                f"Expected all tensors to have the same dtype, but got {dtype} and {t.dtype}"
+            )
     axis = dim % len(tensors[0].shape)
     base = list(tensors[0].shape)
     if any(len(t.shape) != len(base) for t in tensors):
@@ -223,22 +280,23 @@ def _cat(tensors, dim=0):
 def _interpolate(x, size, mode="nearest", antialias=False):
     """Nearest-neighbour resample of the last two dims (shape is what matters).
 
-    Ограничения настоящего torch воспроизводятся: antialias разрешён ТОЛЬКО
-    для bilinear/bicubic/lanczos, а lanczos без него падает. Без этого
-    заглушка подтверждала бы несуществующий успех (skill: приёмка тестов
-    мутацией) — нода передаёт antialias=True всегда.
+    Ограничения настоящего torch воспроизводятся: набор режимов ограничен
+    (lanczos в ``F.interpolate`` НЕТ — он живёт только в
+    ``comfy.utils.common_upscale``), antialias разрешён ТОЛЬКО для
+    bilinear/bicubic/lanczos. Без этого заглушка подтверждала бы
+    несуществующий успех (skill: приёмка тестов мутацией).
     """
+    if mode not in ("nearest", "nearest-exact", "linear", "bilinear", "bicubic", "trilinear", "area"):
+        raise ValueError(f"Unsupported mode '{mode}'")
     if antialias and mode not in ("bilinear", "bicubic", "lanczos"):
         raise ValueError(
             "Anti-alias option is restricted to bilinear, bicubic, and lanczos modes"
         )
-    if mode == "lanczos" and not antialias:
-        raise ValueError("Lanczos mode requires antialias=True")
     out_h, out_w = (int(v) for v in size)
     lead = x.shape[:-2]
     in_h, in_w = x.shape[-2:]
     if in_h == out_h and in_w == out_w:
-        return T(x.shape, x.data)
+        return T(x.shape, x.data, device=x.device, dtype=x.dtype)
     ys = [min(in_h - 1, int(i * in_h / out_h)) for i in range(out_h)]
     xs = [min(in_w - 1, int(i * in_w / out_w)) for i in range(out_w)]
     data = []
@@ -246,7 +304,7 @@ def _interpolate(x, size, mode="nearest", antialias=False):
         for y in ys:
             for px in xs:
                 data.append(x[tuple(lead_coord) + (y, px)])
-    return T(tuple(lead) + (out_h, out_w), data)
+    return T(tuple(lead) + (out_h, out_w), data, device=x.device, dtype=x.dtype)
 
 
 torch_mod = types.ModuleType("torch")
@@ -730,7 +788,7 @@ check(
 import inspect as _inspect
 
 _params = set(_inspect.signature(mod.DeggCropImage.crop).parameters)
-_declared = set(types["required"]) | set(types["optional"])
+_declared = set(types["required"]) | set(types["optional"]) | set(types.get("hidden", {}))
 check(
     "все входы объявлены в сигнатуре crop()",
     not (_declared - _params),
@@ -975,6 +1033,80 @@ check(
     {"right_pixel_rgb": [_out2[0, 3, 3, c] for c in range(3)]},
 )
 
+# ── Устройство: картинка с GPU, маска/файл редактора с CPU ────────────────
+# В ComfyUI картинка после сэмплера живёт на cuda, а маска из LoadImage и файл
+# Mask Editor — на cpu (и float32 против fp16). torch.cat устройство НЕ
+# приводит: нода обязана сделать .to(...), иначе запуск падает RuntimeError.
+_CUDA = make_image(1, 4, 4).to("cuda")
+
+
+def _crop_probe(**kwargs):
+    try:
+        out, msk, w, h = mod.DeggCropImage().crop(
+            crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+            output_size="4,4",
+            multiplicity=0,
+            fill="transparent",
+            **kwargs,
+        )
+        return out, msk, w, h
+    except Exception as exc:  # noqa: BLE001 - падение и есть дефект
+        return None, f"{type(exc).__name__}: {exc}", 0, 0
+
+
+_dev_out, _dev_detail, _dev_w, _dev_h = _crop_probe(image=_CUDA, image_file="", mask_file="")
+check(
+    "устройство: RGB на cuda + прозрачная заливка (torch.ones) — без RuntimeError",
+    _dev_out is not None and _dev_out.shape == (1, 4, 4, 4) and close(_dev_out[0, 0, 0, 3], 1.0),
+    _dev_detail if _dev_out is None else _dev_out.shape,
+)
+check(
+    "устройство: результат следует за картинкой (cuda)",
+    _dev_out is not None and str(_dev_out.device) == "cuda",
+    None if _dev_out is None else str(_dev_out.device),
+)
+
+_devm_out, _devm_detail, _, _ = _crop_probe(
+    image=_CUDA, image_file="", mask_file="", mask=_mask_columns(left=False)
+)
+check(
+    "устройство: маска с cpu + картинка с cuda — альфа приведена",
+    _devm_out is not None and close(_devm_out[0, 0, 0, 3], 1.0),
+    _devm_detail if _devm_out is None else [_devm_out[0, 0, x, 3] for x in range(4)],
+)
+
+_CUDA2 = make_image(2, 4, 4).to("cuda")
+_orig_painted_loader = mod.load_source_file
+mod.load_source_file = _wire_loader(_CUDA2)
+try:
+    _pb_out, _pb_detail, _, _ = _crop_probe(
+        image=_CUDA2, image_file="photo.png", mask_file="clipspace-painted-masked-1.png [input]"
+    )
+finally:
+    mod.load_source_file = _orig_painted_loader
+check(
+    "устройство: файл Paint (cpu) + батч с cuda — cat приведён",
+    _pb_out is not None
+    and _pb_out.shape == (2, 4, 4, 4)
+    and close(_pb_out[0, 1, 1, 0], 1.0),
+    _pb_detail if _pb_out is None else (_pb_out.shape, [_pb_out[0, 1, 1, c] for c in range(3)]),
+)
+
+# ── fallback ресампла без comfy.utils ───────────────────────────────────────
+# comfy.utils.common_upscale — ЕДИНСТВЕННЫЙ носитель lanczos: в
+# F.interpolate такого режима НЕТ. Если импорт comfy не удался, нода обязана
+# откатиться на bicubic, а не упасть ValueError.
+try:
+    _rz_shape = mod._resize(make_image(1, 8, 8)[0], 4, 4, "lanczos").shape
+    _rz_detail = _rz_shape
+except Exception as exc:  # noqa: BLE001 - падение и есть дефект
+    _rz_shape, _rz_detail = None, f"{type(exc).__name__}: {exc}"
+check(
+    "_resize: lanczos без comfy.utils (fallback) — bicubic, без ValueError",
+    _rz_shape == (4, 4, 3),
+    _rz_detail,
+)
+
 # ──────────── 8. ФАЙЛЫ: границы input, EXIF, кратность, валидация ──────────
 # Нода читает картинку по ИМЕНИ из input (как LoadImage). Три обязательных
 # свойства: имя не выводит за пределы input (path traversal), поворот EXIF
@@ -1187,6 +1319,35 @@ check(
 _missing_img, _missing_mask = mod.load_source_file("нет-такого.png")
 check("отсутствующий файл -> пусто", _missing_img is None and _missing_mask is None)
 
+# Старые фронтенды (до unified upload contract) писали файл Mask Editor в
+# input/clipspace/, а в виджет — только имя. Сервер обязан найти его и там,
+# иначе Paint-слой молча теряется (на выходе исходная картинка).
+_CS = _IO_INPUT / "clipspace"
+_CS.mkdir(exist_ok=True)
+(_CS / "clipspace-painted-masked-7.png").write_bytes(b"painted")
+(_CS / "ok.png").write_bytes(b"shadow")
+check(
+    "legacy clipspace: имя без подпапки находится в input/clipspace",
+    mod.input_file_path("clipspace-painted-masked-7.png") is not None,
+    mod.input_file_path("clipspace-painted-masked-7.png"),
+)
+_legacy_img, _legacy_mask = mod.load_source_file("clipspace-painted-masked-7.png")
+check(
+    "legacy clipspace: файл читается (иначе рисунок теряется)",
+    _legacy_img is not None and _legacy_img.shape == (1, 40, 20, 3),
+    None if _legacy_img is None else _legacy_img.shape,
+)
+check(
+    "legacy clipspace: файл в корне input важнее одноимённого в clipspace",
+    str(mod.input_file_path("ok.png")).replace("\\", "/").endswith("/input/ok.png"),
+    mod.input_file_path("ok.png"),
+)
+check(
+    "legacy clipspace: traversal через подпапку по-прежнему отклонён",
+    mod.input_file_path("clipspace/../../secret.png") is None,
+    mod.input_file_path("clipspace/../../secret.png"),
+)
+
 # Пустой результат: кратность не должна ронять ноду (torch: negative dim).
 for _mult, _want in ((-8, 1), (0, 1)):
     try:
@@ -1254,6 +1415,54 @@ check(
     _bad_out,
 )
 
+# Провод: файловый вход не используется. На валидации связанный вход приходит
+# как None (движок подставляет (None,), slice_dict его разворачивает), а старый
+# воркфлоу кладёт в `image` СТРОКУ имени служебного виджета Mask Editor — тогда
+# файл действительно нужен, и его отсутствие обязано быть видно до запуска.
+_wired_img = mod.DeggCropImage.VALIDATE_INPUTS(image_file="удалён.png", image=None)
+check(
+    "VALIDATE_INPUTS: картинка по проводу — битый файл из виджета не валит запуск",
+    _wired_img is True,
+    _wired_img,
+)
+_wired_mask = mod.DeggCropImage.VALIDATE_INPUTS(
+    image_file="ok.png", mask_file="удалён.png", mask=None
+)
+check(
+    "VALIDATE_INPUTS: маска по проводу — битый файл маски не валит запуск",
+    _wired_mask is True,
+    _wired_mask,
+)
+_old_workflow = mod.DeggCropImage.VALIDATE_INPUTS(image_file="ok.png", image="photo.png")
+check(
+    "VALIDATE_INPUTS: строка в image (старый воркфлоу) — файл не подменяется",
+    _old_workflow is True,
+    _old_workflow,
+)
+_unused_mask = mod.DeggCropImage.VALIDATE_INPUTS(
+    image=None, image_file="", mask_file="удалён.png"
+)
+check(
+    "VALIDATE_INPUTS: провод только в image — файл маски проверяется (он нужен)",
+    isinstance(_unused_mask, str),
+    _unused_mask,
+)
+# Старый воркфлоу без провода: значение в сокете — СТРОКА-имя файла (её писал
+# Mask Editor), и этот файл реально открывается. Пропуск проверки по одному
+# присутствию ключа сделал бы битый файл «проводом» и молча пустил бы запуск.
+# Старый воркфлоу без провода: значение в сокете `image` — СТРОКА-имя файла
+# (её писал Mask Editor прежних версий). crop() такую строку игнорирует и
+# читает `image_file`, значит именно ФАЙЛ обязан проверяться: если счесть
+# строку «проводом», битый `image_file` молча пустил бы запуск.
+_legacy_bad = mod.DeggCropImage.VALIDATE_INPUTS(
+    image_file="удалён-legacy.png", image="photo.png"
+)
+check(
+    "VALIDATE_INPUTS: строка в image — не провод, image_file проверяется",
+    isinstance(_legacy_bad, str) and "удалён-legacy.png" in _legacy_bad,
+    _legacy_bad,
+)
+
 # Кэш: перезапись файла с ТЕМ ЖЕ именем обязана пересчитать ноду (как LoadImage).
 _stamp_a = mod.DeggCropImage.IS_CHANGED(image_file="ok.png", mask_file="")
 _stamp_b = mod.DeggCropImage.IS_CHANGED(image_file="ok.png", mask_file="")
@@ -1268,6 +1477,193 @@ check(
     "IS_CHANGED: без файлов штамп стабилен (кэш по сокету не ломается)",
     _stamp_d == mod.DeggCropImage.IS_CHANGED(image_file="", mask_file=""),
     _stamp_d,
+)
+
+# Провод: файловые виджеты не используются, поэтому перезапись такого файла
+# не должна сбрасывать кэш (иначе лишний пересчёт на каждый аплоад).
+_wired_stamp = mod.DeggCropImage.IS_CHANGED(image_file="ok.png", image=None)
+_blank_stamp = mod.DeggCropImage.IS_CHANGED(image_file="", image=None)
+check(
+    "IS_CHANGED: файл при проводе в image в штамп не входит",
+    _wired_stamp == _blank_stamp,
+    (_wired_stamp, _blank_stamp),
+)
+
+# ── Значения, поданные проводом, обязан учитывать сервер ───────────────────
+# frame_w/frame_h/center_x/center_y — экранные копии состояния редактора, а
+# настоящие значения живут в crop_rect/output_size. Провод приходит в prompt
+# как [id, слот]; по нему и отличаем «пользователь задал» от «редактор записал
+# свою копию» (иначе center_x=0 из API-промпта молча центрировал бы кроп).
+_linked = getattr(mod, "linked_inputs", None)
+_resolve = getattr(mod, "resolve_crop_rect", None)
+
+
+def _resolve_call(*args, **kwargs):
+    if not callable(_resolve):
+        return None
+    try:
+        return _resolve(*args, **kwargs)
+    except Exception:
+        return None
+
+
+def _prompt_with(unique_id, **inputs):
+    return {str(unique_id): {"class_type": "DeggCropImage", "inputs": inputs}}
+
+
+_prompt = _prompt_with(
+    7,
+    frame_w=["3", 0],
+    megapixels=2.0,
+    crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+)
+check(
+    "linked_inputs: [id, слот] считается проводом",
+    callable(_linked) and _linked(_prompt, "7") == {"frame_w"},
+    _linked(_prompt, "7") if callable(_linked) else None,
+)
+check(
+    "linked_inputs: литералы проводом не считаются",
+    callable(_linked) and not (_linked(_prompt, "7") & {"megapixels", "crop_rect"}),
+    _linked(_prompt, "7") if callable(_linked) else None,
+)
+check(
+    "linked_inputs: __value__ (массив-значение) проводом не считается",
+    callable(_linked)
+    and _linked({"7": {"inputs": {"frame_h": {"__value__": [1, 2]}}}}, "7") == set(),
+    _linked({"7": {"inputs": {"frame_h": {"__value__": [1, 2]}}}}, "7")
+    if callable(_linked)
+    else None,
+)
+check(
+    "linked_inputs: без prompt/unique_id связей нет",
+    callable(_linked)
+    and _linked(None, None) == set()
+    and _linked(_prompt, "99") == set(),
+    _linked(_prompt, "7") if callable(_linked) else None,
+)
+
+_SQ = {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}  # центр (20,20) на 100×100
+
+
+def _res(rect=None, prompt=None, uid=None, **kw):
+    base = dict(
+        frame_w=0,
+        frame_h=0,
+        output_size_raw="",
+        center_x=0,
+        center_y=0,
+        megapixels=2.0,
+        multiplicity=0,
+    )
+    base.update(kw)
+    return _resolve_call(rect if rect is not None else _SQ, 100, 100,
+                         prompt=prompt, unique_id=uid, **base)
+
+
+_r = _res(prompt=_prompt_with(5, center_x=["9", 0], center_y=["9", 0]),
+          uid="5", center_x=10, center_y=5)
+check(
+    "провод в center_x/center_y двигает рамку (размер сохраняется)",
+    _r is not None
+    and close(_r[0]["x"], 0.5)
+    and close(_r[0]["y"], 0.45)
+    and close(_r[0]["w"], 0.2)
+    and close(_r[0]["h"], 0.2),
+    _r,
+)
+check(
+    "литеральные center_x/center_y рамку НЕ двигают (копия редактора)",
+    (_res(center_x=10, center_y=5) or ({},))[0] == _SQ,
+    _res(center_x=10, center_y=5),
+)
+_r = _res(prompt=_prompt_with(5, center_y=["9", 0]), uid="5", center_x=30, center_y=5)
+check(
+    "провод только в center_y: ось X остаётся на месте",
+    _r is not None and close(_r[0]["x"], _SQ["x"]) and close(_r[0]["y"], 0.45),
+    _r,
+)
+_r = _res(prompt=_prompt_with(5, frame_w=["9", 0]), uid="5", frame_w=800)
+check(
+    "провод в frame_w задаёт размер результата (квадратный кадр)",
+    _r is not None and _r[1] == (800, 800) and close(_r[0]["w"], 0.2),
+    _r,
+)
+_r = _res(
+    prompt=_prompt_with(5, frame_w=["9", 0], frame_h=["9", 1]),
+    uid="5",
+    frame_w=1000,
+    frame_h=500,
+)
+_side_w = math.sqrt(400 * 2.0)
+_side_h = _side_w / 2.0
+check(
+    "провод в frame_w+frame_h задаёт размер и подгоняет пропорции кадра",
+    _r is not None
+    and _r[1] == (1000, 500)
+    and close(_r[0]["w"] * 100, _side_w)
+    and close(_r[0]["h"] * 100, _side_h)
+    and close(_r[0]["x"] * 100 + _side_w / 2.0, 20)
+    and close(_r[0]["y"] * 100 + _side_h / 2.0, 20),
+    _r,
+)
+check(
+    "frame_w/frame_h без провода тоже задают размер (вход API)",
+    (_res(frame_w=300, frame_h=300) or (None, None))[1] == (300, 300),
+    _res(frame_w=300, frame_h=300),
+)
+check(
+    "frame_w=frame_h=0 — размер по мегапикселям (значения нет)",
+    (_res() or (None, None))[1] is None,
+    _res(),
+)
+_r = mod.resolve_crop_rect(_SQ, 100, 100) if callable(_resolve) else None
+check(
+    "выпадающий список (пропорции) сервер не применяет — рамка как в crop_rect",
+    _r is not None and close(_r[0]["w"], _SQ["w"]) and close(_r[0]["h"], _SQ["h"]),
+    _r,
+)
+_r = _res(
+    prompt=_prompt_with(5, frame_w=["9", 0], frame_h=["9", 1], center_x=["9", 2]),
+    uid="5",
+    frame_w=1000,
+    frame_h=500,
+    center_x=10,
+)
+check(
+    "центр применяется после подгонки размера (порядок как в редакторе)",
+    _r is not None and close(_r[0]["x"] * 100 + _side_w / 2.0, 60),
+    _r,
+)
+check(
+    "скрытые prompt/unique_id объявлены (провод в поля иначе не виден)",
+    {"prompt", "unique_id"} <= set(types.get("hidden", {}))
+    and {"prompt", "unique_id"} <= _params,
+    {"hidden": sorted(types.get("hidden", {})), "params": sorted(_params)},
+)
+
+_orig_loader = mod.load_source_file
+mod.load_source_file = lambda name: (
+    (make_image(1, 64, 64), None) if str(name) == "wired.png" else (None, None)
+)
+try:
+    _crop = mod.DeggCropImage()
+    _out, _mask, _w, _h = _crop.crop(
+        image="wired.png",
+        image_file="wired.png",
+        crop_rect='{"x": 0, "y": 0, "w": 1, "h": 1}',
+        frame_w=40,
+        frame_h=20,
+        prompt=_prompt_with(5, frame_w=["9", 0], frame_h=["9", 1]),
+        unique_id="5",
+        multiplicity=0,
+    )
+finally:
+    mod.load_source_file = _orig_loader
+check(
+    "crop(): провод в frame_w/frame_h меняет размер результата на сервере",
+    (_w, _h) == (40, 20),
+    (_w, _h),
 )
 
 # ─────────────────────────────── summary ───────────────────────────────────

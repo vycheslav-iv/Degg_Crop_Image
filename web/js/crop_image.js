@@ -320,6 +320,18 @@ export function outputSizeFor(rectW, rectH, megapixels, multiplicity, manual) {
 }
 
 /**
+ * Строка под рамкой: «1024 × 1024 px  1.00 MP».
+ * Мегапиксель здесь ТОТ ЖЕ, что и в остальном узле (MEGAPIXEL_UNIT = 1024²):
+ * с 1e6 плашка показывала бы другие цифры, чем виджет `megapixels`.
+ */
+export function formatBadge(out) {
+  const w = Math.max(0, Math.round(Number(out?.w) || 0));
+  const h = Math.max(0, Math.round(Number(out?.h) || 0));
+  const megapixels = (w * h) / MEGAPIXEL_UNIT;
+  return `${w} × ${h} px  ${megapixels.toFixed(2)} MP`;
+}
+
+/**
  * Задать рамке пропорции, сохранив её площадь и центр
  * (то же, что делает выбор пресета пропорций).
  */
@@ -667,7 +679,7 @@ function imageSlotIndex(node) {
 function upstreamNode(node) {
   const index = imageSlotIndex(node);
   const source = node.getInputNode?.(index);
-  if (!source) return null;
+  if (!source) return undefined;
   try {
     if (source.isSubgraphNode?.()) {
       const link = node.getInputLink?.(index);
@@ -678,6 +690,107 @@ function upstreamNode(node) {
     /* ignore broken subgraph wiring */
   }
   return source;
+}
+
+/**
+ * Ссылка графа по id: Nodes 2.0 держит `graph.links` как Map, legacy — как
+ * массив.
+ */
+function graphLinkOf(node, id) {
+  const links = node?.graph?.links;
+  if (!links || id == null) return null;
+  if (typeof links.get === 'function') return links.get(id) || null;
+  return links[id] || null;
+}
+
+/** Входной слот по имени виджета (в 1.58 сокет и виджет сосуществуют). */
+function inputSlotByName(node, name) {
+  return (
+    (node?.inputs || []).find(
+      (slot) => slot && (slot.name === name || slot.widget?.name === name),
+    ) || null
+  );
+}
+
+/** Число, которое источник отдаёт без выполнения. Берём виджет, парный
+ * выходу; если выход не назван — единственный числовой виджет (примитивы). */
+function sourceWidgetNumber(source, originSlot) {
+  const numeric = (source?.widgets || []).filter((widget) => {
+    if (!widget || widget.value === '' || widget.value == null) return false;
+    return Number.isFinite(Number(widget.value));
+  });
+  if (!numeric.length) return undefined;
+  const output = source?.outputs?.[originSlot] || null;
+  const byName = output
+    ? numeric.find((widget) => widget.name === output.name || widget.name === output.widget?.name)
+    : null;
+  if (byName) return Number(byName.value);
+  return numeric.length === 1 ? Number(numeric[0].value) : undefined;
+}
+
+function linkNumberValue(source, link, resolveNode, seen) {
+  if (!source || !link) return undefined;
+  try {
+    if (source.isSubgraphNode?.()) {
+      const resolved = source.resolveSubgraphOutputLink?.(link.origin_slot);
+      if (resolved?.outputNode) source = resolved.outputNode;
+    }
+  } catch {
+    /* ignore broken subgraph wiring */
+  }
+  const direct = sourceWidgetNumber(source, link.origin_slot);
+  if (direct !== undefined) return direct;
+  // Reroute / узел-проброс: один вход, своих значений нет.
+  const inputs = source.inputs || [];
+  if (inputs.length === 1 && inputs[0]?.link != null && !seen.has(source)) {
+    seen.add(source);
+    const inner = graphLinkOf(source, inputs[0].link);
+    if (inner) {
+      const next = resolveNode?.(inner.origin_id) || null;
+      return linkNumberValue(next, inner, resolveNode, seen);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Значение, которое приходит проводом во вход `name`:
+ *   null      — провода нет (виджет живёт своей жизнью);
+ *   undefined — провод есть, но источник вычисляется (до запуска не узнать);
+ *   number    — литерал, который источник держит в виджете.
+ */
+function wiredInputValue(node, name, resolveNode) {
+  const slot = inputSlotByName(node, name);
+  if (!slot || slot.link == null) return null;
+  const link = graphLinkOf(node, slot.link);
+  if (!link) return null;
+  const getNode =
+    typeof resolveNode === 'function'
+      ? resolveNode
+      : (id) => node?.graph?.getNodeById?.(id) || null;
+  const source = getNode(link.origin_id);
+  if (!source) return undefined;
+  const value = linkNumberValue(source, link, getNode, new Set());
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Каким путём применить проводные значения выхода. Приоритет как у сервера
+ * (`resolve_crop_rect`): размер кадра важнее мегапикселей, поэтому провод в
+ * `megapixels` действует только когда размер не задан проводом.
+ *   frame        — применить `frame_w`/`frame_h` (ручной размер результата);
+ *   megapixels   — провести MP тем же путём, что ручной ввод поля
+ *                  (ручной размер сбрасывается, превью считается от MP);
+ *   multiplicity — пересчитать с уже существующим размером (кратность — не размер).
+ */
+function wiredOutputPlan(wired) {
+  const source = wired || {};
+  const frame = source.frame_w != null || source.frame_h != null;
+  return {
+    frame,
+    megapixels: !frame && source.megapixels != null,
+    multiplicity: source.multiplicity != null,
+  };
 }
 
 function locatorIdFor(node) {
@@ -865,6 +978,7 @@ function createEditor(node, widget) {
     pending: false,
     ratioLock: null, // захваченные пропорции кадра (px), когда замок без пресета
     suppress: 0, // счётчик программных записей в виджеты
+    wired: {}, // значения, пришедшие проводом: {name: number}
   };
 
   const cropWidget = widgetByName(node, 'crop_rect');
@@ -928,13 +1042,21 @@ function createEditor(node, widget) {
     return state.ratioLock ?? cropRatio();
   }
 
+  /** Значение, пришедшее проводом (перекрывает виджет); null — провода нет. */
+  function wiredNumber(name) {
+    const wired = state.wired || {};
+    return Object.prototype.hasOwnProperty.call(wired, name) ? Number(wired[name]) : null;
+  }
+
   function megapixels() {
-    return Number(mpWidget?.value ?? 2);
+    const wired = wiredNumber('megapixels');
+    return Number.isFinite(wired) ? Math.max(0, wired) : Number(mpWidget?.value ?? 2);
   }
 
   /** Кратность из виджета; 0 = «без округления» (см. `snapSize`). */
   function multiplicity() {
-    const value = Math.round(Number(multWidget?.value ?? 0));
+    const wired = wiredNumber('multiplicity');
+    const value = Math.round(Number(wired ?? multWidget?.value ?? 0));
     return Number.isFinite(value) ? Math.max(0, value) : 0;
   }
 
@@ -1126,14 +1248,17 @@ function createEditor(node, widget) {
    * одна операция на оба случая. */
   function resetToImage() {
     state.frac = { x: 0, y: 0, w: 1, h: 1 };
-    // Размер результата = размер изображения, ТОЧНО в пикселях источника:
-    // никакого округления до кратности (1001×751 → 1000×752 пересэмплировал бы
-    // нескобленную картинку). Мегапиксели покажут эквивалент (syncViews).
+    // Размер результата = размер изображения. В state.manual кладём ТОЧНЫЙ
+    // размер источника: кратность к нему применяется позже, в resultSize()
+    // (как и к любому ручному размеру — SPEC §8.3), поэтому с кратностью 8
+    // источник 1001×751 выйдет 1000×752, а с кратностью 0 — пиксель в пиксель.
+    // Мегапиксели покажут эквивалент (syncViews).
     state.manual = state.img ? { w: state.img.w, h: state.img.h } : null;
     state.ratioLock = state.img ? state.img.w / state.img.h : null;
     programmatic(aspectWidget, 'free');
     programmatic(lockWidget, true);
     commit();
+    applyWiredInputs();
   }
 
   /** Ручной размер, расходящийся с пропорциями кадра, устарел — отбрасываем:
@@ -1185,10 +1310,8 @@ function createEditor(node, widget) {
   }
 
   function layoutBadge() {
-    const out = resultSize();
-    const megapixels = (out.w * out.h) / 1e6;
     // Одна строка: размер и мегапиксели, разделённые отступом (шрифт моноширинный).
-    badge.textContent = `${out.w} × ${out.h} px  ${megapixels.toFixed(2)} MP`;
+    badge.textContent = formatBadge(resultSize());
     badge.style.display = '';
   }
 
@@ -1353,7 +1476,7 @@ function createEditor(node, widget) {
 
   function outputsRef() {
     const source = upstreamNode(node);
-    if (!source) return null;
+    if (!source) return undefined;
     const key = locatorIdFor(source);
     return key ? app?.nodeOutputs?.[key] ?? null : null;
   }
@@ -1464,6 +1587,7 @@ function createEditor(node, widget) {
       }
       if (!changed) {
         layout();
+        applyWiredInputs();
         return;
       }
       // Новая картинка: кадр остаётся в долях, а пропорции приводятся к
@@ -1482,6 +1606,8 @@ function createEditor(node, widget) {
       } else {
         commit();
       }
+      // Проводные значения важнее восстановленной рамки: показываем их сразу.
+      applyWiredInputs();
     };
     image.onerror = () => {
       state.img = null;
@@ -2080,6 +2206,7 @@ function createEditor(node, widget) {
     setResultSize(resultSize().w, height);
   });
 
+
   // Правка мегапикселей возвращает обычный режим (размер по MP).
   onWidgetChange(mpWidget, () => {
     setMegaPixels();
@@ -2141,6 +2268,116 @@ function createEditor(node, widget) {
     });
   }
 
+  // ── ЗНАЧЕНИЯ ИЗ ПРОВОДОВ ────────────────────────────────────────────────
+  // Провод не пишет виджет, поэтому без этого превью менялось бы только после
+  // запуска. Читаем литерал источника (примитив/число) и применяем сразу:
+  // размер кадра, пропорции, центр, мегапиксели, кратность.
+  const WIRED_INPUTS = [
+    'center_x',
+    'center_y',
+    'frame_w',
+    'frame_h',
+    'megapixels',
+    'multiplicity',
+  ];
+
+  function syncWiredValues() {
+    const next = {};
+    for (const name of WIRED_INPUTS) {
+      const value = wiredInputValue(node, name);
+      if (Number.isFinite(value)) next[name] = value;
+    }
+    state.wired = next;
+    return next;
+  }
+
+  /** Применяет проводные значения к кадру (порядок как на сервере:
+   * размер → пропорции → центр). */
+  function applyWiredInputs() {
+    if (!state.img) return;
+    const wired = syncWiredValues();
+    const fw = wired.frame_w;
+    const fh = wired.frame_h;
+    const current = resultSize();
+    const plan = wiredOutputPlan(wired);
+    if (plan.frame) {
+      setResultSize(fw != null ? fw : current.w, fh != null ? fh : current.h);
+    } else if (plan.megapixels) {
+      // Провод в мегапиксели — ровно тот же путь, что ручная правка поля:
+      // ручной размер сбрасывается, и превью (размер + плашка) считается от MP.
+      setMegaPixels();
+    }
+    if (wired.center_x != null || wired.center_y != null) {
+      setFrameCenter(
+        wired.center_x != null ? wired.center_x : Number(centerXWidget?.value),
+        wired.center_y != null ? wired.center_y : Number(centerYWidget?.value),
+      );
+    }
+    if (plan.multiplicity && !plan.frame && !plan.megapixels) commit();
+  }
+
+  let wiredWatch = [];
+  let wiredScheduled = false;
+
+  function detachWiredWatch() {
+    for (const entry of wiredWatch) {
+      if (entry.source && entry.handler && entry.source.onWidgetChanged === entry.handler) {
+        entry.source.onWidgetChanged = entry.prev || undefined;
+      }
+      for (const wrap of entry.widgets) {
+        if (wrap.widget.callback === wrap.wrapper) {
+          if (wrap.original) wrap.widget.callback = wrap.original;
+          else delete wrap.widget.callback;
+        }
+      }
+    }
+    wiredWatch = [];
+  }
+
+  function scheduleWiredRefresh() {
+    if (wiredScheduled) return;
+    wiredScheduled = true;
+    requestAnimationFrame(() => {
+      wiredScheduled = false;
+      applyWiredInputs();
+    });
+  }
+
+  /** Следим за источниками: правка числа в примитиве обновляет превью сразу. */
+  function watchWiredSources() {
+    detachWiredWatch();
+    const seen = new Set();
+    for (const name of WIRED_INPUTS) {
+      const slot = inputSlotByName(node, name);
+      if (!slot || slot.link == null) continue;
+      const link = graphLinkOf(node, slot.link);
+      if (!link) continue;
+      const source = node.graph?.getNodeById?.(link.origin_id) || null;
+      if (!source || seen.has(source)) continue;
+      seen.add(source);
+      const prev = source.onWidgetChanged;
+      const handler = function () {
+        const result = prev?.apply(this, arguments);
+        scheduleWiredRefresh();
+        return result;
+      };
+      source.onWidgetChanged = handler;
+      const widgets = [];
+      for (const widget of source.widgets || []) {
+        if (!widget || typeof widget.callback !== 'function') continue;
+        const original = widget.callback;
+        const wrapper = function () {
+          const result = original.apply(this, arguments);
+          scheduleWiredRefresh();
+          return result;
+        };
+        widget.callback = wrapper;
+        widgets.push({ widget, original, wrapper });
+      }
+      wiredWatch.push({ source, prev, handler, widgets });
+    }
+  }
+
   const resize = node.onResize;
   node.onResize = function () {
     const result = resize?.apply(this, arguments);
@@ -2156,6 +2393,15 @@ function createEditor(node, widget) {
     const result = connections?.apply(this, arguments);
     const isInput = type === (window.LiteGraph?.INPUT ?? 1);
     const imageIdx = imageSlotIndex(node);
+    if (isInput) {
+      // Подключили/сняли провод с любого входа: сразу пересчитываем превью по
+      // новому значению, не дожидаясь запуска (ТЗ: рамка видна до «Запустить»).
+      requestAnimationFrame(() => {
+        syncWiredValues();
+        watchWiredSources();
+        applyWiredInputs();
+      });
+    }
     if (isInput && Number(slot) === imageIdx) {
       requestAnimationFrame(() => {
         noteSourceKind();
@@ -2220,6 +2466,8 @@ function createEditor(node, widget) {
     state.restoring = true;
     loadStateFromWidgets({ dropStale: false });
     requestAnimationFrame(() => {
+      syncWiredValues();
+      watchWiredSources();
       watchSource();
       loadSource({ force: true });
       commit();
@@ -2230,6 +2478,8 @@ function createEditor(node, widget) {
   loadStateFromWidgets();
   refreshLayoutSize();
   requestAnimationFrame(() => {
+    syncWiredValues();
+    watchWiredSources();
     watchSource();
     loadSource({ force: true });
     commit();
@@ -2249,14 +2499,18 @@ function createEditor(node, widget) {
       /* ignore */
     }
     detachSource();
+    detachWiredWatch();
     return remove?.apply(this, arguments);
   };
 
   function refresh() {
     state.restoring = true;
     loadStateFromWidgets();
+    syncWiredValues();
+    watchWiredSources();
     loadSource();
     commit();
+    applyWiredInputs();
   }
 
   return {

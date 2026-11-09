@@ -48,7 +48,7 @@ check(
   /def\s+IS_CHANGED/.test(PY) &&
     /st_mtime_ns/.test(PY) &&
     /st_size/.test(PY) &&
-    /for name in \(image_file, mask_file\)/.test(PY) &&
+    /for name, socket in \(\(image_file, "image"\), \(mask_file, "mask"\)\)/.test(PY) &&
     // штамп обязан ВОЗВРАЩАТЬСЯ: собранные size/mtime без return ничего не дают
     /return "\|"\.join\(parts\)/.test(PY),
 );
@@ -92,7 +92,10 @@ const EXPECTED_OPTIONAL = [
   "golden_ratio",
   "snap_edges",
 ];
-const optionalBlock = PY.slice(PY.indexOf('"optional": {'));
+const optionalBlock = PY.slice(
+  PY.indexOf('"optional": {'),
+  PY.indexOf('"hidden": {'),
+);
 const optionalNames = [...optionalBlock.matchAll(/^ {16}"([a-z_]+)":/gm)].map((m) => m[1]);
 check(
   "Python: набор обязательных входов",
@@ -558,9 +561,15 @@ check(
 );
 check(
   "JS: outputSizeFor применяет кратность к ручному размеру (как Python)",
-  /export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,700}?Math\.max\(1, pyRound\(Number\(manual\.w\)\)\)/.test(JS) &&
-    !/export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,700}?Math\.round/.test(JS) &&
-    /export function outputSizeFor\(rectW, rectH, megapixels, multiplicity, manual\)[\s\S]{0,700}?snapSize\(/.test(JS),
+  (() => {
+    const start = JS.indexOf("export function outputSizeFor(");
+    const body = JS.slice(start, JS.indexOf("export function formatBadge(", start));
+    return (
+      /Math\.max\(1, pyRound\(Number\(manual\.w\)\)\)/.test(body) &&
+      !/Math\.round/.test(body) &&
+      /snapSize\(/.test(body)
+    );
+  })(),
 );
 check(
   "Python: ручной размер результата проходит через кратность",
@@ -568,7 +577,7 @@ check(
 );
 check(
   "JS: плашка показывает ИТОГОВЫЙ размер (а не размер кадра)",
-  /function layoutBadge\(\)[\s\S]{0,200}?const out = resultSize\(\)/.test(JS),
+  /function layoutBadge\(\)[\s\S]{0,200}?formatBadge\(resultSize\(\)\)/.test(JS),
 );
 check(
   "JS: размер пишется в нативные виджеты тихо (frame_w/frame_h)",
@@ -596,6 +605,12 @@ check(
     /onWidgetChange\(mpWidget[\s\S]{0,200}?setMegaPixels\(\)/.test(JS),
 );
 check(
+  "JS: провод в мегапиксели идёт тем же путём, что ручная правка поля",
+  // Иначе проводной MP не сбрасывает ручной размер и плашка остаётся старой.
+  /function wiredOutputPlan\(wired\)[\s\S]{0,600}?megapixels: !frame && source\.megapixels != null/.test(JS) &&
+    /function applyWiredInputs\(\)[\s\S]{0,1200}?plan\.megapixels[\s\S]{0,260}?setMegaPixels\(\)/.test(JS),
+);
+check(
   "JS: в ручном режиме мегапиксели показывают эквивалент результата",
   /function syncViews\(\)[\s\S]{0,900}?writeWidget\(mpWidget, \(out\.w \* out\.h\) \/ MEGAPIXEL_UNIT\)/.test(JS),
 );
@@ -603,7 +618,11 @@ check(
   "Python: ручной размер результата учитывается при расчёте",
   /def output_size\([\s\S]{0,400}?manual: tuple\[int, int\] \| None = None/.test(PY) &&
     /if manual is not None:/.test(PY) &&
-    /parse_output_size\(output_size\)/.test(PY),
+    // ручной размер разбирается в resolve_crop_rect (значения входов → кадр)
+    /parse_output_size\(output_size_raw\)/.test(PY) &&
+    // размер проходит ту же кратность, что и по мегапикселям
+    /out_w, out_h = output_size\(/.test(PY) &&
+    /manual = \(out_w, out_h\)/.test(PY),
 );
 
 check(
@@ -635,7 +654,8 @@ check(
 // — после, поэтому порядок на теле ноды задаёт редактор.
 const WIDGET_ORDER_EXPECTED = [
   "image_file", "upload_file", "preview",
-  "lock_ratio", "center_x", "center_y", "frame_w", "frame_h", "aspect_ratio",
+  "lock_ratio", "center_x", "center_y", "frame_w", "frame_h",
+  "aspect_ratio",
   "megapixels", "multiplicity", "resample", "fill", "dim_outside", "golden_ratio",
   "snap_edges", "crop_rect", "output_size", "mask_file", "image",
 ];
@@ -763,6 +783,77 @@ check(
   "Python: golden_ratio — необязательный BOOLEAN с выключенным по умолчанию",
   /"golden_ratio":\s*\(\s*"BOOLEAN"/.test(PY) &&
     /"default":\s*False/.test(PY),
+);
+
+// ── Исправления аудита 2026-11 ─────────────────────────────────────────────
+// Провод в сокете `image`/`mask` полностью заменяет файловый виджет. Без
+// этого старая маска в виджете валила валидацию и держала узел в кэше, хотя
+// файл не читается вовсе.
+check(
+  "Python: проводной сокет не проверяется и не штампуется",
+  /def\s+_wired_sockets/.test(PY) &&
+    /linked_inputs\(rest\.get\("prompt"\), rest\.get\("unique_id"\)\)/.test(PY) &&
+    (PY.match(/if socket in wired:/g) || []).length === 2,
+);
+check(
+  "Python: строка в сокете image — legacy-виджет, файл всё ещё проверяется",
+  /not isinstance\(rest\.get\(socket\), str\)/.test(PY),
+);
+// 1 MP = 1024² в подсказках: с 1,000,000 плашка/виджет печатают разные числа.
+check(
+  "Подсказки: 1 MP = 1024² (не 1 000 000)",
+  !/1[,  ]000[,  ]000/.test(PY) &&
+    !/1[,  ]000[,  ]000/.test(JSON.stringify(EN)) &&
+    !/1[,  ]000[,  ]000/.test(JSON.stringify(RU)) &&
+    /1 MP = 1024 x 1024 px/.test(PY),
+);
+check(
+  "JS: плашка считает мегапиксель тем же MEGAPIXEL_UNIT",
+  /export function formatBadge\(out\)/.test(JS) &&
+    /const MEGAPIXEL_UNIT = 1024 \* 1024;/.test(JS) &&
+    /const megapixels = \(w \* h\) \/ MEGAPIXEL_UNIT;/.test(JS) &&
+    !/\/ 1e6/.test(JS),
+);
+// Устройство/тип: маска (LoadImage → cpu/float32) и файл Mask Editor (cpu)
+// входят в torch.cat с картинкой (может быть cuda/fp16) — без приведения
+// RuntimeError прямо в сэмпле.
+check(
+  "Python: альфа маски приведена к dtype/device кадра",
+  /alpha\[\.\.\., None\]\.to\(dtype=patch\.dtype, device=patch\.device\)/.test(PY),
+);
+check(
+  "Python: torch.ones не подмешивает cpu к cuda-кадру",
+  (() => {
+    const start = PY.indexOf("def render_frames");
+    const body = PY.slice(start, PY.indexOf("\ndef ", start + 10));
+    const hits = [...body.matchAll(/torch\.ones\(/g)].map((m) => m.index);
+    return (
+      hits.length > 0 &&
+      hits.every((at) => /^[\s\S]{0,200}?device=patch\.device/.test(body.slice(at)))
+    );
+  })(),
+);
+check(
+  "Python: painted-батч приводится к устройству/типу картинки",
+  /painted_image\.to\(device=image\.device, dtype=image\.dtype\)/.test(PY),
+);
+check(
+  "Python: канва и маска результата на устройстве источника",
+  /device = getattr\(image, "device", None\)/.test(PY) &&
+    /torch\.zeros\([\s\S]{0,160}?device=device/.test(PY),
+);
+// lanczos живёт только в comfy.utils.common_upscale; F.interpolate такого
+// режима не знает и падает ValueError.
+check(
+  "Python: lanczos не уходит в F.interpolate",
+  /mode = "bicubic" if method == "lanczos" else method/.test(PY) &&
+    !/interpolate\(\s*[^)]*mode=lanczos/.test(PY),
+);
+// Фронтенд ≥1.58 кладёт painted-файл в корень input, старые — в input/clipspace.
+check(
+  "Python: input_file_path ищет и в input/clipspace",
+  /"clipspace"/.test(PY) &&
+    /_input_path_checked\(base, os\.path\.join\("clipspace", text\)\)/.test(PY),
 );
 
 // ── Итог ───────────────────────────────────────────────────────────────────

@@ -79,7 +79,9 @@ vm.runInContext(src + "\nglobalThis.__RATIOS = RATIO_VALUES;\n", ctx, { filename
 const { pyRound, computeOutputSize, parseRectFrac, clampFrac, resizeFrame } = ctx;
 const { centerFrameFrac, fitFrameFrac, frameCenterOffset, moveFrameToOffset, axisDelta } = ctx;
 const { snapSize, outputSizeFor, frameWithRatio, parseManualSize, fracRatio, ratiosMatch } = ctx;
+const { formatBadge } = ctx;
 const { isMaskEditorValue } = ctx;
+const { wiredInputValue, wiredOutputPlan } = ctx;
 
 // ── 1. pyRound = Python round() (banker's) ──────────────────────────────────
 check("pyRound(0.5) == 0", pyRound(0.5) === 0, pyRound(0.5));
@@ -114,6 +116,26 @@ check("multiplicity is honoured", odd.w % 12 === 0 && odd.h % 12 === 0, `${odd.w
 const seven = computeOutputSize(1000, 1000, 2, 7);
 check("multiplicity 7 honoured", seven.w % 7 === 0 && seven.h % 7 === 0, `${seven.w}x${seven.h}`);
 check("degenerate size stays positive", computeOutputSize(0, 0, 0, 0).w >= 1);
+
+// ── 2b. плашка под рамкой: тот же мегапиксель, что и у виджета ──────────────
+// Единица мегапикселя в узле — 1024² (паритет с ResolutionSelector и с
+// Python output_size). С 1e6 та же сетка 1024×1024 даёт «1.05 MP» на плашке
+// и «1.00» в виджете — два разных числа об одном размере.
+check(
+  "formatBadge(1024×1024) == '1024 × 1024 px  1.00 MP'",
+  formatBadge({ w: 1024, h: 1024 }) === "1024 × 1024 px  1.00 MP",
+  JSON.stringify(formatBadge({ w: 1024, h: 1024 })),
+);
+check(
+  "formatBadge(2048×1024) == '2048 × 1024 px  2.00 MP'",
+  formatBadge({ w: 2048, h: 1024 }) === "2048 × 1024 px  2.00 MP",
+  JSON.stringify(formatBadge({ w: 2048, h: 1024 })),
+);
+check(
+  "formatBadge(1928×1088) == '1928 × 1088 px  2.00 MP'",
+  formatBadge({ w: 1928, h: 1088 }) === "1928 × 1088 px  2.00 MP",
+  JSON.stringify(formatBadge({ w: 1928, h: 1088 })),
+);
 
 // ── 3. parseRectFrac / clampFrac ────────────────────────────────────────────
 const full = { x: 0, y: 0, w: 1, h: 1 };
@@ -531,6 +553,102 @@ check(
   "Mask Editor: путь с подпапкой опознаётся по имени файла",
   isMaskEditorValue("sub/clipspace-paint-1.png [input]", "sub/photo.png") === true,
 );
+
+// ── 12. Значения из проводов (живое превью до запуска) ─────────────────────
+// Провод не пишет виджет, поэтому редактор обязан сам прочитать литерал
+// источника. Три состояния: null — провода нет; undefined — провод есть, но
+// значение вычисляется; number — готовое число.
+const WIRED = (() => {
+  const primitive = { id: 1, widgets: [{ name: 'value', value: 832 }], outputs: [{ name: 'value' }] };
+  const computed = { id: 3, widgets: [{ name: 'a', value: 1 }, { name: 'b', value: 2 }], outputs: [{ name: 'result' }] };
+  const reroute = { id: 2, widgets: [], inputs: [{ link: 10 }], outputs: [{ name: '' }] };
+  const subgraph = {
+    id: 4,
+    widgets: [],
+    outputs: [{ name: 'out' }],
+    isSubgraphNode: () => true,
+    resolveSubgraphOutputLink: () => ({ outputNode: primitive }),
+  };
+  const nodes = new Map([[1, primitive], [2, reroute], [3, computed], [4, subgraph]]);
+  const graph = {
+    links: new Map([
+      [5, { origin_id: 1, origin_slot: 0 }],
+      [6, { origin_id: 3, origin_slot: 0 }],
+      [10, { origin_id: 1, origin_slot: 0 }],
+      [11, { origin_id: 2, origin_slot: 0 }],
+      [12, { origin_id: 4, origin_slot: 0 }],
+      [13, { origin_id: 99, origin_slot: 0 }],
+    ]),
+    getNodeById: (id) => nodes.get(id) || null,
+  };
+  for (const n of nodes.values()) n.graph = graph;
+  const node = (inputs) => ({ graph, inputs });
+  return { primitive, computed, reroute, subgraph, graph, node };
+})();
+
+check(
+  "провод: нет входа — null (виджет живёт сам)",
+  WIRED.node([]).inputs.length === 0 &&
+    wiredInputValue(WIRED.node([]), "frame_w") === null &&
+    wiredInputValue(WIRED.node([{ name: "frame_w", link: null }]), "frame_w") === null,
+);
+check(
+  "провод: литерал примитива читается сразу",
+  wiredInputValue(WIRED.node([{ name: "frame_w", link: 5 }]), "frame_w") === 832,
+);
+check(
+  "провод: сокет с именем виджета тоже находится",
+  wiredInputValue(WIRED.node([{ widget: { name: "frame_h" }, link: 5 }]), "frame_h") === 832,
+);
+check(
+  "провод: вычисляемый источник — значение неизвестно (undefined, не null)",
+  wiredInputValue(WIRED.node([{ name: "frame_w", link: 6 }]), "frame_w") === undefined,
+);
+check(
+  "провод: Reroute прозрачен для значения",
+  wiredInputValue(WIRED.node([{ name: "center_x", link: 11 }]), "center_x") === 832,
+);
+check(
+  "провод: subgraph-источник разворачивается",
+  wiredInputValue(WIRED.node([{ name: "megapixels", link: 12 }]), "megapixels") === 832,
+);
+check(
+  "провод: оборванный id источника — неизвестно, не «нет провода»",
+  wiredInputValue(WIRED.node([{ name: "frame_w", link: 13 }]), "frame_w") === undefined,
+);
+check(
+  "провод: legacy links-массив поддерживается",
+  (() => {
+    const nodes = new Map([[1, { ...WIRED.primitive, graph: null }]]);
+    const legacy = {
+      links: [{ origin_id: 1, origin_slot: 0 }],
+      getNodeById: (id) => nodes.get(id) || null,
+    };
+    nodes.get(1).graph = legacy;
+    return wiredInputValue({ graph: legacy, inputs: [{ name: "frame_w", link: 0 }] }, "frame_w") === 832;
+  })(),
+);
+
+// ── 13. Приоритет проводных значений выхода ────────────────────────────────
+// Сервер (`resolve_crop_rect`) применяет размер кадра раньше мегапикселей,
+// поэтому провод в MP действует только когда размер не задан проводом.
+const PLAN = (w) => (typeof wiredOutputPlan === "function" ? wiredOutputPlan(w) : {});
+check("провод: без проводов ничего не применяем", (() => {
+  const p = PLAN({});
+  return p.frame === false && p.megapixels === false && p.multiplicity === false;
+})(), JSON.stringify(PLAN({})));
+check("провод: MP по проводу — тем же путём, что ручной ввод", (() => {
+  const p = PLAN({ megapixels: 2 });
+  return p.megapixels === true && p.frame === false;
+})(), JSON.stringify(PLAN({ megapixels: 2 })));
+check("провод: размер кадра важнее MP (как на сервере)", (() => {
+  const p = PLAN({ frame_w: 900, megapixels: 2 });
+  return p.frame === true && p.megapixels === false;
+})(), JSON.stringify(PLAN({ frame_w: 900, megapixels: 2 })));
+check("провод: одна кратность отдельного пересчёта не отменяет", (() => {
+  const p = PLAN({ multiplicity: 64 });
+  return p.multiplicity === true && p.frame === false && p.megapixels === false;
+})(), JSON.stringify(PLAN({ multiplicity: 64 })));
 
 // ── итог ───────────────────────────────────────────────────────────────────
 console.log("");
