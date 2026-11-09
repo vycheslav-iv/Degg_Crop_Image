@@ -665,6 +665,23 @@ for _group in types.values():
 _ui_strings.append(str(getattr(mod.DeggCropImage, "DESCRIPTION", "")))
 _ru_ui = [text for text in _ui_strings if _ru(text)]
 check("Python без русского текста в объявленном интерфейсе", not _ru_ui, _ru_ui[:3])
+# Подсказки не косметика: маска обязана называть конвенцию ComfyUI (1 = убрать),
+# иначе пользователь читает «1 = непрозрачно» и получает противоположный результат.
+_mask_tip = str(types["optional"]["mask"][1].get("tooltip", ""))
+_fw_tip = str(types["optional"]["frame_w"][1].get("tooltip", ""))
+_fh_tip = str(types["optional"]["frame_h"][1].get("tooltip", ""))
+check(
+    "mask: подсказка по конвенции ComfyUI (1 = remove), не «opaque»",
+    "1 = remove" in _mask_tip.lower() and "opaque" not in _mask_tip.lower(),
+    _mask_tip,
+)
+check(
+    "frame_w/frame_h: подсказка = итоговый размер результата",
+    "result" in _fw_tip.lower()
+    and "result" in _fh_tip.lower()
+    and "crop region" not in (_fw_tip + _fh_tip).lower(),
+    {"frame_w": _fw_tip, "frame_h": _fh_tip},
+)
 check("category My_custom_nodes/Image", mod.DeggCropImage.CATEGORY == "My_custom_nodes/Image")
 # Интерфейсные входы объявлены НЕОБЯЗАТЕЛЬНЫМИ: сервер их не читает, и API
 # не должен требовать их передавать. (Сокет image и выбор файла image_file

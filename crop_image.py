@@ -656,8 +656,8 @@ class DeggCropImage:
                         "min": 0,
                         "max": 100000,
                         "step": 1,
-                        "tooltip": "Width of the crop region in source pixels. "
-                        "0 keeps the current frame size.",
+                        "tooltip": "Final result width in pixels. The frame proportions "
+                        "follow it; megapixels show the equivalent value.",
                     },
                 ),
                 "frame_h": (
@@ -667,8 +667,8 @@ class DeggCropImage:
                         "min": 0,
                         "max": 100000,
                         "step": 1,
-                        "tooltip": "Height of the crop region in source pixels. "
-                        "0 keeps the current frame size.",
+                        "tooltip": "Final result height in pixels. The frame proportions "
+                        "follow it; megapixels show the equivalent value.",
                     },
                 ),
                 "aspect_ratio": (
@@ -681,8 +681,8 @@ class DeggCropImage:
                 "mask": (
                     "MASK",
                     {
-                        "tooltip": "Optional alpha for the source (1 = opaque). "
-                        "Replaces the source alpha.",
+                        "tooltip": "Optional mask for the source (ComfyUI convention: "
+                        "1 = remove). Visible alpha = 1 - mask; replaces the source alpha.",
                     },
                 ),
                 "golden_ratio": (

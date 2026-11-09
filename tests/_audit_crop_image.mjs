@@ -363,6 +363,25 @@ for (const [lang, data] of [["ru", RU], ["en", EN]]) {
   }
 }
 
+// Подсказка маски — часть контракта: в ComfyUI маска = 1 там, где область надо
+// УБРАТЬ (видимая альфа = 1 − маска). «1 = непрозрачно» — противоположный смысл.
+check(
+  "locales/ru: mask по конвенции ComfyUI (1 = убрать)",
+  /1\s*=\s*убрать/i.test(RU[NODE]?.inputs?.mask?.tooltip ?? ""),
+  RU[NODE]?.inputs?.mask?.tooltip ?? "",
+);
+check(
+  "locales/en: mask по конвенции ComfyUI (1 = remove)",
+  /1\s*=\s*remove/i.test(EN[NODE]?.inputs?.mask?.tooltip ?? ""),
+  EN[NODE]?.inputs?.mask?.tooltip ?? "",
+);
+const README = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+check(
+  "README: mask по конвенции ComfyUI (1 = убрать), не «непрозрачно»",
+  /`mask`\s*\|\s*MASK[^\n]*1\s*=\s*убрать/i.test(README)
+    && !/1\s*=\s*непрозрачно/i.test(README),
+);
+
 // Значения combo не переводятся: ключи подписей пропорций = протокольные значения.
 const jsRatioBlock = JS.slice(JS.indexOf("const RATIO_VALUES = {"), JS.indexOf("};", JS.indexOf("const RATIO_VALUES = {")));
 const jsRatioKeys = [...jsRatioBlock.matchAll(/'([0-9]+:[0-9]+)'\s*:/g)].map((m) => m[1]);

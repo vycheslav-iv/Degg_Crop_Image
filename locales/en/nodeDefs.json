@@ -13,7 +13,7 @@
       },
       "mask": {
         "name": "Mask",
-        "tooltip": "Optional alpha for the source (1 = opaque). Replaces the source alpha."
+        "tooltip": "Optional mask for the source (ComfyUI convention: 1 = remove). Visible alpha = 1 - mask; replaces the source alpha."
       },
       "center_x": {
         "name": "Frame centre X",
