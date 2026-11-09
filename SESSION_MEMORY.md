@@ -5,47 +5,65 @@
 ---
 
 ## 1. Что делали в этой сессии (кратко)
-- Приведены к фактическому контракту подсказки `mask` и `frame_w/frame_h`:
-  Python-источник, локали RU/EN, README.
-- Добавлены проверки-детекторы (Python-песочница + статический аудит), каждая
-  подтверждена мутацией (сломанный текст → FAIL: 1 → восстановление).
-- Изменения закоммичены и запушены в `origin/master`.
+- Полный аудит (Python + JS + бандлы фронтенда 1.58.5), затем исправлены
+  **все 6 находок** по правилу приёмки: красный тест → фикс → зелёный → мутации.
+- Дописаны скилы `comfyui-mask-editor` и `comfyui-is-changed` (3 копии равны).
+- Коммит `3da2741` («fix: шесть находок аудита…») запушен в `origin/master`.
 
 ## 2. Итоговое состояние кода
-- `crop_image.py:684` — `mask` tooltip: конвенция ComfyUI `1 = remove`,
-  видимая альфа `1 - mask`.
-- `crop_image.py:659,670` — `frame_w/frame_h` tooltip: ИТОГОВЫЙ размер
-  результата; убрано ложное «crop region in source pixels / 0 keeps size».
-- `locales/en/nodeDefs.json` — EN зеркало Python; `locales/ru/nodeDefs.json` —
-  `1 = убрать`, видимая альфа `1 − маска`.
-- `README.md:96` — строка `mask` по конвенции ComfyUI.
-- `tests/_test_crop_image.py` — +2 проверки (`mask`, `frame_w/frame_h`);
-  прогон: `PASS: 149  FAIL: 0`.
-- `tests/_audit_crop_image.mjs` — +3 проверки (ru mask, en mask, README-строка);
-  прогон: `ok: 201  FAIL: 0`, «аудит чист».
+- `crop_image.py:204` — `linked_inputs()`: имена, поданные ПРОВОДОМ (по
+  исходному промпту через скрытые `PROMPT`/`UNIQUE_ID`).
+- `crop_image.py:226` — `_wired_sockets()`: две подписи провода (литерал
+  `[id, slot]` в промпте + `None` в kwargs при валидации); строка в сокете —
+  НЕ провод (legacy-виджет Mask Editor).
+- `crop_image.py:956,976` — `VALIDATE_INPUTS` / `IS_CHANGED` пропускают сокет,
+  поданный проводом; `image_file` всё равно проверяется.
+- `crop_image.py:398` — `_resize`: `lanczos` → fallback `bicubic`
+  (`F.interpolate` такого режима не знает), `antialias` только bilinear/bicubic.
+- `crop_image.py:483` — `input_file_path`: корень `input`, затем fallback
+  `input/clipspace/` (файлы Mask Editor до фронтенда 1.58); containment по
+  `realpath`+`commonpath` (`_input_path_checked`, :518).
+- `crop_image.py:672` — `render_frames`: `device = getattr(image, "device", None)`;
+  `canvas`/`mask_out` на этом device, альфа и `torch.ones` — к
+  `patch.dtype/device`, painted-батч — `.to(device=image.device, dtype=image.dtype)`.
+- `web/js/crop_image.js:327` — `formatBadge()`: MP через `MEGAPIXEL_UNIT`
+  (=1024², :76); плашка и виджет печатают одно и то же число.
+- `web/js/crop_image.js:1249` — комментарий `resetToImage`: кратность
+  применяется позже в `resultSize()` (SPEC §8.3), не «не применяется».
+- `SPECIFICATION.md` §6.1 (clipspace + провод), §8.5 (единица MP), §10.4
+  (таблица «находка → красный замер → фикс»), §7 (числа прогонов).
 
 ## 3. Проблемы, которые встречались (и как решали)
-- Подсказки расходились с кодом: `mask` называл `1 = непрозрачно` (обратный
-  смысл конвенции), `frame_w/h` — «crop region… 0 keeps current frame size».
-  Исправлено текстом и закреплено проверками.
-- README-детектор сначала был слишком слабым: матчил другую строку README про
-  сокет. Сузил до табличной строки `` `mask` | MASK `` + запрет «1 = непрозрачно».
+- Валидация считала битым файл, который заменит провод → `_wired_sockets`.
+- Первый вариант теста был неверен: требовал валидировать СТРОКУ в сокете
+  `image`. `crop()` эту строку игнорирует и читает `image_file` — тест
+  переписан: «строка в image — не провод, `image_file` проверяется».
+- Старые детекторы аудита держали отпечаток старого выражения (`outputSizeFor`,
+  `layoutBadge`) → правились ДЕТЕКТОРЫ, не откатывалась задача.
+- Мутационный скрипт падал на кириллице в stdout (cp1251) —
+  `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` + ascii-tail.
+- Хук `commit-msg` блокирует `.py`-упоминание вне индекса: в сообщении писать
+  «прогон проверки папки», а не `python _process/check.py`.
 
 ## 4. Что важно не сломать при продолжении работы
-- Маска: конвенция ComfyUI `1 = убрать`, видимая альфа = `1 − маска`
-  (`_mask_alpha`, `crop_image.py:235`).
-- `mask` / `frame_w` / `frame_h` — тексты/UI: сервер их не читает, состояние в
-  `crop_rect` / `output_size`; логику не «оптимизировать» под подсказки.
-- Значения combo не переводить; RU-текст живёт только в `locales/ru`.
-- Python-правки и `locales/` требуют перезапуска ComfyUI; правки JS — свежей
-  загрузки страницы.
-- Тесты — только в `tests/`; `sync.py` их не копирует в рабочую копию.
+- Единица мегапикселя ОДНА: 1024² (паритет с ResolutionSelector и с Python
+  `output_size`); `1e6`/`1 000 000` в коде, подсказках и локалях запрещены.
+- Провод vs значение: строку в сокете `image` НЕЛЬЗЯ считать проводом.
+- Маска: конвенция ComfyUI `1 = убрать`, видимая альфа = `1 − маска`.
+- Кратность применяется ВСЕГДА (в т.ч. размер от картинки/«Сбросить»).
+- Значения combo не переводить; RU-текст только в `locales/ru`.
+- Python/`locales` → перезапуск ComfyUI; JS → Ctrl+F5.
 
-## 5. Следующие шаги (идеи, не сделано)
-- После перезапуска ComfyUI проверить подсказки глазами в RU и EN.
-- При необходимости — живые пробы (`_probe_live_dom_crop_image.py`,
-  `_probe_live_reset_params.py`, `_probe_live_workflow_switch.py`).
+## 5. Следующие шаги (не сделано)
+- Перезапустить ComfyUI + Ctrl+F5, перепрогнать живые пробы
+  (`_probe_live_dom_crop_image.py`, `_probe_live_reset_params.py`,
+  `_probe_live_workflow_switch.py`) — они измерялись до этих правок.
+- Глазами: плашка 1024×1024 → «1.00 MP»; проводной MP; mask-редактор с файлом
+  из старого `input/clipspace/`.
 
 ## 6. Связанные файлы
 - `crop_image.py`, `web/js/crop_image.js`, `SPECIFICATION.md`, `README.md`,
-  `locales/ru/nodeDefs.json`, `locales/en/nodeDefs.json`, `tests/`, `check.json`.
+  `locales/ru|en/nodeDefs.json`, `tests/_test_crop_image.py`,
+  `tests/_smoke_crop_image.mjs`, `tests/_audit_crop_image.mjs`, `check.json`.
+- Скилы: `.opencode|.kilo|.agents/skills/comfyui-mask-editor`,
+  `comfyui-is-changed` (в корне бандла, не в git этого репозитория).
