@@ -14,6 +14,7 @@
 | T-4 | Шесть находок полного аудита (плашка 1024², провод vs файл, device, lanczos, clipspace) | DONE | commit `3da2741`, `python tests/_test_crop_image.py` → FAIL: 0 |
 | T-5 | Перепрогнать живые пробы после правок `3da2741` (DOM, сброс параметров, смена воркфлоу) | NOT STARTED | — |
 | T-6 | Глазами: плашка 1024×1024 → «1.00 MP»; MP по проводу; mask-редактор с файлом из `input/clipspace/` | NEEDS REVIEW | — |
+| T-7 | Паспорт: `TASKS.md` в §1/§7.2, «отклонённые альтернативы» §8.7, восстановлен удалённый §8.3 | DONE | `python _process/check.py Degg_Crop_Image` → ЗЕЛЁНОЕ: провалов 0 |
 
 ## Как вести
 
